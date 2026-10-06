@@ -1,0 +1,26 @@
+# Build output
+/target/
+
+# Logs, captures and dumps can contain device serials or personal data
+*.log
+*.pcap
+*.pcapng
+*.etl
+/capturas/
+/dumps/
+
+# Local environment and editor state
+.env
+.env.*
+.vscode/
+.idea/
+config.toml.local
+
+# Local workflow files (not part of the published project)
+/.claude/
+/AGENTS.md
+/CLAUDE.md
+/Plantillas/
+/Planes/
+/Proceso - Creación de planes.md
+/ERRORES.md

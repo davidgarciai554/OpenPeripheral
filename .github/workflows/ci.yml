@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token; no secrets are used by this workflow.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml selects stable with rustfmt and clippy.
+      - run: rustup show
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: SHA-256 of the binary
+        shell: pwsh
+        run: |
+          $f = "target/release/openperipheral.exe"
+          "{0}  openperipheral.exe" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower() | Tee-Object SHA256SUMS.txt
+          "Size: {0} bytes" -f (Get-Item $f).Length
