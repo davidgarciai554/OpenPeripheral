@@ -4,6 +4,7 @@
 //! while it exists, so the idle cost of the app does not change.
 
 use super::glyph::GdiPlus;
+use super::mouse_settings;
 use super::panel::{self, Ctx, Fonts, ID_EMPTY_REFRESH, ID_RETRY, ID_SETTINGS, PanelKind};
 use super::theme::{self, DARK, Palette};
 use super::{send, text, wide, with_app};
@@ -32,13 +33,15 @@ const COMPACT_BELOW: f32 = 480.0;
 
 pub(crate) struct State {
     hwnd: Option<HWND>,
-    palette: Palette,
-    fonts: Option<Rc<Fonts>>,
+    pub(super) palette: Palette,
+    pub(super) fonts: Option<Rc<Fonts>>,
     gdiplus: Option<GdiPlus>,
     panels: Vec<(PanelKind, HWND)>,
-    shared: Shared,
-    scroll: i32,
+    pub(super) shared: Shared,
+    pub(super) scroll: i32,
     refresh: Option<HWND>,
+    /// The "Ajustes del ratón" page, when it replaces the device grid.
+    pub(super) mouse: Option<mouse_settings::MouseState>,
 }
 
 impl Default for State {
@@ -52,6 +55,7 @@ impl Default for State {
             shared: Shared::default(),
             scroll: 0,
             refresh: None,
+            mouse: None,
         }
     }
 }
@@ -106,11 +110,11 @@ pub(crate) fn register(instance: HINSTANCE) {
     }
 }
 
-fn instance() -> HINSTANCE {
+pub(super) fn instance() -> HINSTANCE {
     unsafe { GetModuleHandleW(None).unwrap_or_default().into() }
 }
 
-fn scale_of(hwnd: HWND) -> f32 {
+pub(super) fn scale_of(hwnd: HWND) -> f32 {
     unsafe { GetDpiForWindow(hwnd).max(96) as f32 / 96.0 }
 }
 
@@ -270,7 +274,7 @@ fn create_panel(view: HWND, kind: &PanelKind) -> Option<HWND> {
     }
 }
 
-fn set_text_if_changed(h: HWND, text: &str) -> bool {
+pub(super) fn set_text_if_changed(h: HWND, text: &str) -> bool {
     let len = unsafe { GetWindowTextLengthW(h) }.max(0) as usize;
     let mut buf = vec![0u16; len + 1];
     let n = unsafe { GetWindowTextW(h, &mut buf) }.max(0) as usize;
@@ -291,6 +295,11 @@ pub(crate) fn refresh() {
     let Some(shared) = super::snapshot() else {
         return;
     };
+    if with_app(|a| a.view.mouse.is_some()) == Some(true) {
+        with_app(|a| a.view.shared = shared.clone());
+        mouse_settings::refresh(view);
+        return;
+    }
     let kinds = panel::panels_for(&shared);
     let old: Vec<(PanelKind, HWND)> = with_app(|a| a.view.panels.clone()).unwrap_or_default();
     let same = old.len() == kinds.len() && old.iter().zip(&kinds).all(|((k, _), n)| k == n);
@@ -360,12 +369,12 @@ pub(crate) fn refresh() {
     }
 }
 
-struct Geometry {
-    scale: f32,
-    compact: bool,
-    top: i32,
-    left: i32,
-    avail: i32,
+pub(super) struct Geometry {
+    pub scale: f32,
+    pub compact: bool,
+    pub top: i32,
+    pub left: i32,
+    pub avail: i32,
 }
 
 fn geometry(view: HWND) -> Geometry {
@@ -396,7 +405,11 @@ fn header_height(g: &Geometry) -> i32 {
 
 /// Positions the header button and every panel for the current size,
 /// scroll position and DPI, and updates the scroll bar.
-fn relayout(view: HWND) {
+pub(super) fn relayout(view: HWND) {
+    if with_app(|a| a.view.mouse.is_some()) == Some(true) {
+        relayout_mouse(view);
+        return;
+    }
     let Some((panels, shared, palette, fonts, scroll)) = with_app(|a| {
         (
             a.view.panels.clone(),
@@ -535,8 +548,79 @@ fn relayout(view: HWND) {
     }
 }
 
+fn relayout_mouse(view: HWND) {
+    let g = geometry(view);
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(view, &mut rc);
+    }
+    let scroll = with_app(|a| a.view.scroll).unwrap_or(0);
+    let content = mouse_settings::layout(view, &g, scroll);
+    let clamped = scroll.clamp(0, (content - rc.bottom).max(0));
+    if clamped != scroll {
+        with_app(|a| a.view.scroll = clamped);
+        mouse_settings::layout(view, &g, clamped);
+    }
+    unsafe {
+        let si = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+            nMin: 0,
+            nMax: content - 1,
+            nPage: rc.bottom.max(0) as u32,
+            nPos: clamped,
+            ..Default::default()
+        };
+        SetScrollInfo(view, SB_VERT, &si, true);
+    }
+}
+
+/// Removes the device grid (used when the mouse settings page opens).
+pub(super) fn clear_devices_page(view: HWND) {
+    let panels = with_app(|a| std::mem::take(&mut a.view.panels)).unwrap_or_default();
+    for (_, h) in panels {
+        unsafe {
+            let _ = DestroyWindow(h);
+        }
+    }
+    if let Some(Some(b)) = with_app(|a| a.view.refresh) {
+        unsafe {
+            let _ = ShowWindow(b, SW_HIDE);
+        }
+    }
+    let _ = view;
+}
+
+/// Shows the device grid again and focuses the "Ajustes" button of `focus`.
+pub(super) fn restore_devices_page(view: HWND, focus: Option<&crate::devices::DeviceKey>) {
+    if let Some(Some(b)) = with_app(|a| a.view.refresh) {
+        unsafe {
+            let _ = ShowWindow(b, SW_SHOWNA);
+        }
+    }
+    set_text_if_changed(view, "OpenPeripheral — Dispositivos");
+    refresh();
+    let target = focus.and_then(|key| {
+        with_app(|a| {
+            a.view
+                .panels
+                .iter()
+                .find(|(k, _)| matches!(k, PanelKind::Device(d) if d == key))
+                .map(|(_, h)| *h)
+        })
+        .flatten()
+    });
+    let button = target.and_then(|p| unsafe { GetDlgItem(Some(p), ID_SETTINGS).ok() });
+    let fallback = with_app(|a| a.view.refresh).flatten();
+    if let Some(b) = button.or(fallback) {
+        unsafe {
+            let _ = SetFocus(Some(b));
+        }
+    }
+}
+
 /// Scrolls so that `child` (a descendant of the view) is fully visible.
-fn ensure_visible(view: HWND, child: HWND) {
+pub(super) fn ensure_visible(view: HWND, child: HWND) {
     let mut r = RECT::default();
     let mut rc = RECT::default();
     unsafe {
@@ -567,19 +651,44 @@ fn ensure_visible(view: HWND, child: HWND) {
     }
 }
 
+/// Scrolls the content by `delta` px. ScrollWindowEx moves the child
+/// controls and the already painted pixels in one step, so only the newly
+/// exposed strip is repainted (moving every control and repainting the
+/// whole window on each wheel notch left blank buttons behind).
 fn scroll_by(view: HWND, delta: i32) {
     if delta == 0 {
         return;
     }
-    with_app(|a| a.view.scroll += delta);
-    relayout(view);
+    let mut si = SCROLLINFO {
+        cbSize: size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        ..Default::default()
+    };
     unsafe {
-        let _ = RedrawWindow(
-            Some(view),
+        let _ = GetScrollInfo(view, SB_VERT, &mut si);
+    }
+    let max = (si.nMax + 1 - si.nPage as i32).max(0);
+    let old = with_app(|a| a.view.scroll).unwrap_or(0);
+    let new = (old + delta).clamp(0, max);
+    if new == old {
+        return;
+    }
+    with_app(|a| a.view.scroll = new);
+    unsafe {
+        si.fMask = SIF_POS;
+        si.nPos = new;
+        SetScrollInfo(view, SB_VERT, &si, true);
+        ScrollWindowEx(
+            view,
+            0,
+            old - new,
             None,
             None,
-            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE,
+            None,
+            None,
+            SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
         );
+        let _ = UpdateWindow(view);
     }
 }
 
@@ -620,7 +729,10 @@ fn paint_view(view: HWND) {
         let bmp = CreateCompatibleBitmap(hdc, rc.right.max(1), rc.bottom.max(1));
         let old = SelectObject(mem, bmp.into());
         panel::fill(mem, rc, palette.bg_app);
-        if let Some(f) = fonts {
+        let mouse_page = with_app(|a| a.view.mouse.is_some()) == Some(true);
+        if mouse_page {
+            mouse_settings::paint(mem, &palette, g.scale, scroll);
+        } else if let Some(f) = fonts {
             SetBkMode(mem, TRANSPARENT);
             let draw = |text: &str, font: HFONT, color: theme::Color, y: i32| {
                 let o = SelectObject(mem, font.into());
@@ -679,14 +791,29 @@ extern "system" fn view_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
         }
         WM_DRAWITEM => {
             let dis = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
-            draw_button(hwnd, dis, "Actualizar", None);
+            if with_app(|a| a.view.mouse.is_some()) == Some(true) {
+                mouse_settings::draw_item(hwnd, dis);
+            } else {
+                draw_button(hwnd, dis, "Actualizar", None);
+            }
             LRESULT(1)
+        }
+        WM_CTLCOLORLISTBOX => mouse_settings::list_color(HDC(wparam.0 as *mut _))
+            .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }),
+        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => {
+            mouse_settings::ctl_color(HDC(wparam.0 as *mut _), HWND(lparam.0 as *mut _))
+                .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
         }
         WM_COMMAND => {
             let (id, code) = (
                 (wparam.0 & 0xffff) as i32,
                 ((wparam.0 >> 16) & 0xffff) as u32,
             );
+            if with_app(|a| a.view.mouse.is_some()) == Some(true)
+                && mouse_settings::on_command(hwnd, id, code, lparam)
+            {
+                return LRESULT(0);
+            }
             match (id, code) {
                 (ID_REFRESH, BN_CLICKED) => send(Command::Refresh),
                 (ID_REFRESH, BN_SETFOCUS) => ensure_visible(hwnd, HWND(lparam.0 as *mut _)),
@@ -780,6 +907,8 @@ extern "system" fn view_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
             LRESULT(0)
         }
         WM_DESTROY => {
+            super::confirm::owner_destroyed();
+            mouse_settings::destroyed();
             with_app(|a| {
                 a.view.hwnd = None;
                 a.view.panels.clear();
@@ -822,7 +951,15 @@ fn draw_button(parent: HWND, dis: &DRAWITEMSTRUCT, label: &str, kind: Option<&Pa
         }
         _ => palette.bg_app,
     };
-    panel::draw_button(dis, label, bg, &palette, &fonts, scale_of(parent));
+    panel::draw_button(
+        dis,
+        label,
+        bg,
+        &palette,
+        &fonts,
+        scale_of(parent),
+        panel::ButtonStyle::Normal,
+    );
 }
 
 fn panel_kind(h: HWND) -> Option<PanelKind> {
@@ -907,9 +1044,20 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             );
             match code {
                 BN_CLICKED => match (id, panel_kind(hwnd)) {
-                    // Placeholder until the new settings screen exists (user
-                    // decision 2026-10-06): the button is shown but does nothing.
-                    (ID_SETTINGS, _) => {}
+                    (ID_SETTINGS, Some(PanelKind::Device(key))) => {
+                        // Mice open their settings page; other device types
+                        // are still placeholders (DESIGN.md, deviation 2).
+                        let is_mouse = with_app(|a| {
+                            a.view.shared.devices.iter().any(|d| {
+                                d.info.key == key && d.info.kind == crate::devices::Kind::Mouse
+                            })
+                        });
+                        if is_mouse == Some(true) {
+                            if let Ok(view) = unsafe { GetParent(hwnd) } {
+                                mouse_settings::enter(view, key);
+                            }
+                        }
+                    }
                     (ID_EMPTY_REFRESH | ID_RETRY, _) => send(Command::Refresh),
                     _ => {}
                 },

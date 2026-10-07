@@ -24,8 +24,15 @@ const KNOWN: &[(&str, &str)] = &[
     ("signalrgb", "SignalRGB"),
 ];
 
+/// Background services of that software that never touch the devices; the
+/// G HUB updater keeps running after G HUB is closed.
+const IGNORED: &[&str] = &["lghub_updater"];
+
 pub fn match_known(process: &str) -> Option<&'static str> {
     let p = process.to_ascii_lowercase();
+    if IGNORED.iter().any(|i| p.starts_with(i)) {
+        return None;
+    }
     KNOWN
         .iter()
         .find(|(prefix, _)| p.starts_with(prefix))
@@ -127,6 +134,8 @@ mod tests {
     #[test]
     fn known_process_names() {
         assert_eq!(match_known("lghub_agent.exe"), Some("Logitech G HUB"));
+        assert_eq!(match_known("lghub.exe"), Some("Logitech G HUB"));
+        assert_eq!(match_known("lghub_updater.exe"), None);
         assert_eq!(match_known("RazerAppEngine.exe"), Some("Razer Synapse"));
         assert_eq!(match_known("steam.exe"), Some("Steam (Steam Input)"));
         assert_eq!(match_known("steamwebhelper.exe"), None);

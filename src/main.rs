@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod app;
+mod backup;
 mod config;
 mod devices;
 mod platform;

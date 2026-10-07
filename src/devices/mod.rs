@@ -203,12 +203,39 @@ pub enum Change {
     Color(Rgb),
 }
 
+/// Raw onboard-profile memory read from a mouse (HID++ 0x8100). Kept by the
+/// worker for backups; never sent anywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileDump {
+    pub info: crate::protocol::onboard::Info,
+    /// Sector of the active user profile.
+    pub sector: u16,
+    pub directory: Vec<u8>,
+    pub user: Vec<u8>,
+    /// Factory (ROM) copy of the profile.
+    pub rom: Vec<u8>,
+}
+
 pub trait Device: Send {
     fn info(&self) -> &DeviceInfo;
     /// HID path to open for every operation.
     fn path(&self) -> &CString;
     fn read_state(&mut self, t: &dyn Transport) -> Result<State>;
     fn apply(&mut self, t: &dyn Transport, change: Change) -> Result<()>;
+    /// Reads the onboard profile memory. Read only. `Unsupported` when the
+    /// device has no onboard profiles or uses a format not yet verified.
+    fn read_profile(&mut self, _t: &dyn Transport) -> Result<ProfileDump> {
+        Err(Error::Unsupported)
+    }
+    /// Writes a validated profile image and reads the sector back. Returns
+    /// `Ok` only if the device now holds exactly the image's bytes.
+    fn write_profile(
+        &mut self,
+        _t: &dyn Transport,
+        _image: &crate::protocol::onboard::ProfileImage,
+    ) -> Result<()> {
+        Err(Error::Unsupported)
+    }
 }
 
 /// Builds the devices behind one whitelisted HID interface. A Logitech

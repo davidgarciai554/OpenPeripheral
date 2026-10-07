@@ -126,6 +126,81 @@ pub fn conflicts(names: &[&str]) -> String {
     }
 }
 
+/// Names of a mouse's buttons in profile order (G305 layout, observed by
+/// comparing the user and factory profiles).
+pub fn mouse_button(index: usize) -> String {
+    const NAMES: [&str; 6] = [
+        "Izquierdo",
+        "Derecho",
+        "Central (rueda)",
+        "Lateral trasero",
+        "Lateral delantero",
+        "Botón DPI",
+    ];
+    NAMES
+        .get(index)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| format!("Botón {}", index + 1))
+}
+
+fn key_name(usage: u8) -> String {
+    match usage {
+        0x04..=0x1d => ((b'A' + usage - 0x04) as char).to_string(),
+        0x1e..=0x26 => ((b'1' + usage - 0x1e) as char).to_string(),
+        0x27 => "0".into(),
+        0x28 => "Intro".into(),
+        0x29 => "Esc".into(),
+        0x2a => "Retroceso".into(),
+        0x2b => "Tab".into(),
+        0x2c => "Espacio".into(),
+        0x3a..=0x45 => format!("F{}", usage - 0x3a + 1),
+        0x49 => "Insert".into(),
+        0x4a => "Inicio".into(),
+        0x4b => "RePág".into(),
+        0x4c => "Supr".into(),
+        0x4d => "Fin".into(),
+        0x4e => "AvPág".into(),
+        0x4f => "Flecha derecha".into(),
+        0x50 => "Flecha izquierda".into(),
+        0x51 => "Flecha abajo".into(),
+        0x52 => "Flecha arriba".into(),
+        u => format!("Tecla 0x{u:02X}"),
+    }
+}
+
+/// "Ctrl + Mayús + V" from HID modifier bits and usage id.
+pub fn shortcut(modifiers: u8, usage: u8) -> String {
+    const MODS: [(u8, &str); 4] = [
+        (0x11, "Ctrl"),
+        (0x22, "Mayús"),
+        (0x44, "Alt"),
+        (0x88, "Win"),
+    ];
+    let mut parts: Vec<String> = MODS
+        .iter()
+        .filter(|(m, _)| modifiers & m != 0)
+        .map(|(_, n)| n.to_string())
+        .collect();
+    parts.push(key_name(usage));
+    parts.join(" + ")
+}
+
+/// What a button does, in words.
+pub fn action(a: crate::protocol::onboard::Action) -> String {
+    use crate::protocol::onboard::Action;
+    match a {
+        Action::Mouse(0x01) => "Clic izquierdo".into(),
+        Action::Mouse(0x02) => "Clic derecho".into(),
+        Action::Mouse(0x04) => "Clic central".into(),
+        Action::Mouse(0x08) => "Atrás".into(),
+        Action::Mouse(0x10) => "Adelante".into(),
+        Action::Mouse(m) => format!("Botones de ratón 0x{m:04X}"),
+        Action::Keyboard { modifiers, usage } => format!("Atajo {}", shortcut(modifiers, usage)),
+        Action::Raw([0x90, ..]) => "Función del perfil".into(),
+        Action::Raw(_) => "Acción no reconocida (no editable)".into(),
+    }
+}
+
 /// DESIGN.md: 0–20 % is "Batería baja".
 pub fn is_low(percent: u8) -> bool {
     percent <= 20
@@ -286,6 +361,9 @@ mod tests {
             last_battery: None,
             saved: false,
             applied_color: None,
+            original_dpi: None,
+            profile: crate::app::Profile::NotRead,
+            backup: None,
         }
     }
 
@@ -524,5 +602,44 @@ mod tests {
             .push(snap("b", Status::Failed(Error::Timeout)));
         shared.devices.push(snap("c", Status::Disconnected));
         assert_eq!(connected_count(&shared), "2 conectados");
+    }
+
+    #[test]
+    fn button_and_action_names() {
+        use crate::protocol::onboard::Action;
+        assert_eq!(mouse_button(0), "Izquierdo");
+        assert_eq!(mouse_button(5), "Botón DPI");
+        assert_eq!(mouse_button(7), "Botón 8");
+        assert_eq!(action(Action::Mouse(0x08)), "Atrás");
+        assert_eq!(
+            action(Action::Keyboard {
+                modifiers: 0x01,
+                usage: 0x19
+            }),
+            "Atajo Ctrl + V"
+        );
+        assert_eq!(
+            action(Action::Keyboard {
+                modifiers: 0x03,
+                usage: 0x06
+            }),
+            "Atajo Ctrl + Mayús + C"
+        );
+        assert_eq!(
+            action(Action::Keyboard {
+                modifiers: 0x00,
+                usage: 0x3b
+            }),
+            "Atajo F2"
+        );
+        assert_eq!(
+            action(Action::Raw([0x90, 0x0c, 0, 0])),
+            "Función del perfil"
+        );
+        assert_eq!(
+            action(Action::Raw([0x20, 0, 0, 0])),
+            "Acción no reconocida (no editable)"
+        );
+        assert_eq!(shortcut(0x40, 0x1f), "Alt + 2");
     }
 }

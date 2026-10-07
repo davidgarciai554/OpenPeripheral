@@ -1,9 +1,11 @@
 //! HID++ 2.0 devices, directly attached or behind a receiver.
 
 use super::{
-    Change, Device, DeviceInfo, Dpi, Error, ReportRate, Result, State, Supported, Transport,
+    Change, Device, DeviceInfo, Dpi, Error, ProfileDump, ReportRate, Result, State, Supported,
+    Transport,
 };
 use crate::protocol::hidpp::{self, Reply, Request, feature};
+use crate::protocol::onboard;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::time::{Duration, Instant};
@@ -132,6 +134,32 @@ pub fn probe(s: &'static Supported, path: CString, t: &dyn Transport) -> Vec<Hid
     found
 }
 
+impl HidppDevice {
+    /// Reads a whole sector, 16 bytes at a time (the last read is aligned to
+    /// the end: reading past it is rejected by the device).
+    fn read_sector(&mut self, t: &dyn Transport, sector: u16, size: u16) -> Result<Vec<u8>> {
+        let size = size as usize;
+        let mut data = Vec::with_capacity(size);
+        while data.len() < size {
+            let offset = data.len().min(size.saturating_sub(16));
+            let chunk = self.request(
+                t,
+                Request::MemoryRead {
+                    sector,
+                    offset: offset as u16,
+                },
+            )?;
+            let chunk = chunk
+                .get(..16)
+                .ok_or(Error::Protocol("lectura de memoria"))?;
+            data.truncate(offset);
+            data.extend_from_slice(chunk);
+        }
+        data.truncate(size);
+        Ok(data)
+    }
+}
+
 impl Device for HidppDevice {
     fn info(&self) -> &DeviceInfo {
         &self.info
@@ -139,6 +167,52 @@ impl Device for HidppDevice {
 
     fn path(&self) -> &CString {
         &self.path
+    }
+
+    fn read_profile(&mut self, t: &dyn Transport) -> Result<ProfileDump> {
+        let p = self.request(t, Request::OnboardInfo)?;
+        let info = onboard::parse_info(&p).ok_or(Error::Protocol("información del perfil"))?;
+        if info.profile_format != onboard::KNOWN_FORMAT {
+            return Err(Error::Unsupported);
+        }
+        let p = self.request(t, Request::GetCurrentProfile)?;
+        let sector = u16::from_be_bytes([
+            *p.first().ok_or(Error::Protocol("perfil activo"))?,
+            *p.get(1).ok_or(Error::Protocol("perfil activo"))?,
+        ]);
+        // Only user profiles listed in the directory are ever considered.
+        let directory = self.read_sector(t, 0x0000, info.sector_size)?;
+        if !onboard::crc_ok(&directory)
+            || !onboard::parse_directory(&directory)
+                .iter()
+                .any(|&(s, _)| s == sector)
+        {
+            return Err(Error::Protocol("directorio de perfiles"));
+        }
+        let user = self.read_sector(t, sector, info.sector_size)?;
+        if !onboard::crc_ok(&user) {
+            return Err(Error::Protocol("CRC del perfil"));
+        }
+        // Factory copies live at 0x01xx (observed: profile 0x0001 -> 0x0101).
+        let rom = self.read_sector(t, 0x0100 | (sector & 0x00ff), info.sector_size)?;
+        Ok(ProfileDump {
+            info,
+            sector,
+            directory,
+            user,
+            rom,
+        })
+    }
+
+    fn write_profile(&mut self, t: &dyn Transport, image: &onboard::ProfileImage) -> Result<()> {
+        for req in image.write_requests() {
+            self.request(t, req)?;
+        }
+        let back = self.read_sector(t, image.sector(), image.bytes().len() as u16)?;
+        if back != image.bytes() {
+            return Err(Error::Protocol("la memoria releída no coincide"));
+        }
+        Ok(())
     }
 
     fn read_state(&mut self, t: &dyn Transport) -> Result<State> {
@@ -200,10 +274,24 @@ mod tests {
     use super::*;
     use crate::devices::{SUPPORTED, fake::FakeTransport};
     use crate::protocol::{Battery, ChargeState};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     /// Simulates a G305 at index 1: features resolved by id, fixed answers.
     fn g305() -> FakeTransport {
-        FakeTransport::new(|req| {
+        g305_with(Rc::new(RefCell::new(onboard::samples::user_profile())))
+    }
+
+    /// Same, with the user profile (sector 1) held in `user`, writable
+    /// through 0x8100 fn6/7/8.
+    fn g305_with(user: Rc<RefCell<Vec<u8>>>) -> FakeTransport {
+        g305_with_commit(user, true)
+    }
+
+    /// `commit = false` acknowledges writes without storing them.
+    fn g305_with_commit(user: Rc<RefCell<Vec<u8>>>, commit: bool) -> FakeTransport {
+        let pending: RefCell<Option<(u16, usize, Vec<u8>)>> = RefCell::new(None);
+        FakeTransport::new(move |req| {
             let (idx, feat, func) = (req[1], req[2], req[3]);
             if idx != 1 {
                 return vec![]; // no device: timeout
@@ -211,13 +299,59 @@ mod tests {
             let mut r = vec![0u8; 20];
             r[..4].copy_from_slice(&req[..4]);
             let f = func >> 4;
+            // 0x8100 memory reads are served from real G305 sectors.
+            let memory;
             let p: &[u8] = match (feat, f) {
+                (7, 0) => &[
+                    0x01, 0x03, 0x01, 0x01, 0x01, 0x06, 0x06, 0x00, 0xff, 0x0a, 0x02,
+                ],
+                (7, 4) => &[0x00, 0x01],
+                (7, 5) => {
+                    let sector = match u16::from_be_bytes([req[4], req[5]]) {
+                        0x0000 => onboard::samples::directory(),
+                        0x0001 => user.borrow().clone(),
+                        0x0101 => onboard::samples::rom_profile(),
+                        _ => return vec![],
+                    };
+                    let off = u16::from_be_bytes([req[6], req[7]]) as usize;
+                    if off + 16 > sector.len() {
+                        return vec![vec![
+                            0x11, 1, 0xff, feat, func, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            0,
+                        ]];
+                    }
+                    memory = sector[off..off + 16].to_vec();
+                    &memory
+                }
+                (7, 6) => {
+                    let (sector, len) = (
+                        u16::from_be_bytes([req[4], req[5]]),
+                        u16::from_be_bytes([req[8], req[9]]) as usize,
+                    );
+                    *pending.borrow_mut() = Some((sector, len, Vec::new()));
+                    &[]
+                }
+                (7, 7) => {
+                    if let Some((_, _, data)) = pending.borrow_mut().as_mut() {
+                        data.extend_from_slice(&req[4..20]);
+                    }
+                    &[]
+                }
+                (7, 8) => {
+                    if let (true, Some((1, len, mut data))) = (commit, pending.borrow_mut().take())
+                    {
+                        data.truncate(len);
+                        *user.borrow_mut() = data;
+                    }
+                    &[]
+                }
                 (0, 1) => &[4, 2, req[6]],
                 (0, 0) => match u16::from_be_bytes([req[4], req[5]]) {
                     0x0005 => &[2],
                     0x1000 => &[4],
                     0x2201 => &[5],
                     0x8060 => &[6],
+                    0x8100 => &[7],
                     _ => &[0],
                 },
                 (2, 0) => &[4],
@@ -238,6 +372,76 @@ mod tests {
             // Unrelated notification first, then the reply.
             vec![vec![0x11, 1, 0x09, 0x00, 1, 2, 3], r]
         })
+    }
+
+    #[test]
+    fn reads_the_onboard_profile_read_only() {
+        let t = g305();
+        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let before = t.sent.borrow().len();
+        let dump = d.read_profile(&t).unwrap();
+        assert_eq!(dump.sector, 0x0001);
+        assert_eq!(dump.user, onboard::samples::user_profile());
+        assert_eq!(dump.directory, onboard::samples::directory());
+        assert_eq!(dump.rom, onboard::samples::rom_profile());
+        assert_eq!(dump.user.len(), 255);
+        // Only 0x8100 functions 0, 4 and 5 (reads) were sent: never 6, 7, 8.
+        let sent = t.sent.borrow();
+        assert!(
+            sent[before..]
+                .iter()
+                .filter(|r| r[2] == 7)
+                .all(|r| matches!(r[3] >> 4, 0 | 4 | 5))
+        );
+    }
+
+    #[test]
+    fn writes_profile_and_verifies_by_reading_back() {
+        let user = Rc::new(RefCell::new(onboard::samples::user_profile()));
+        let t = g305_with(user.clone());
+        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let dump = d.read_profile(&t).unwrap();
+        let image = onboard::apply_buttons(
+            &dump.user,
+            dump.sector,
+            &dump.directory,
+            dump.info.button_count,
+            &[(4, onboard::Action::Mouse(0x10))],
+        )
+        .unwrap();
+        d.write_profile(&t, &image).unwrap();
+        assert_eq!(user.borrow().as_slice(), image.bytes());
+        // Writes only went to sector 1, as a 6/7.../8 sequence.
+        let sent = t.sent.borrow();
+        let writes: Vec<_> = sent
+            .iter()
+            .filter(|r| r[2] == 7 && matches!(r[3] >> 4, 6..=8))
+            .collect();
+        assert_eq!(writes.len(), 18);
+        assert_eq!(&writes[0][4..10], &[0, 1, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn write_fails_when_read_back_differs() {
+        // A device that acknowledges writes but keeps the old bytes.
+        let t = g305_with_commit(
+            Rc::new(RefCell::new(onboard::samples::user_profile())),
+            false,
+        );
+        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let dump = d.read_profile(&t).unwrap();
+        let image = onboard::apply_buttons(
+            &dump.user,
+            dump.sector,
+            &dump.directory,
+            6,
+            &[(4, onboard::Action::Mouse(0x10))],
+        )
+        .unwrap();
+        assert_eq!(
+            d.write_profile(&t, &image),
+            Err(Error::Protocol("la memoria releída no coincide"))
+        );
     }
 
     #[test]

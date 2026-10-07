@@ -6,16 +6,12 @@
 pub mod text;
 pub mod theme;
 
+mod confirm;
 mod devices_view;
 mod glyph;
 mod icon;
+mod mouse_settings;
 mod panel;
-// The classic settings window is no longer reachable since the "Dispositivos"
-// view replaced it (its "Ajustes" button is a placeholder for now). Kept until
-// the new settings screen is designed; remove it then, or earlier if the user
-// decides so.
-#[allow(dead_code)]
-mod settings;
 
 use crate::app::{Command, Shared, Worker};
 use crate::platform::system;
@@ -48,10 +44,8 @@ const ID_EXIT: usize = 4;
 const ID_DEVICE_BASE: usize = 1000;
 
 pub(crate) struct App {
-    pub settings: Option<HWND>,
     pub shared: Arc<Mutex<Shared>>,
     pub tx: Sender<Command>,
-    pub ui: settings::State,
     pub view: devices_view::State,
     taskbar_created: u32,
 }
@@ -182,7 +176,6 @@ fn on_command(id: usize) {
         ID_REFRESH => send(Command::Refresh),
         ID_AUTOSTART => {
             let _ = system::set_autostart(!system::autostart_enabled());
-            settings::refresh();
         }
         ID_EXIT => unsafe { PostQuitMessage(0) },
         _ => {}
@@ -211,7 +204,6 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
             if let Some(shared) = snapshot() {
                 tray_update(hwnd, &shared);
             }
-            settings::refresh();
             devices_view::refresh();
             LRESULT(0)
         }
@@ -259,7 +251,6 @@ pub fn run() {
             ..Default::default()
         };
         RegisterClassW(&class);
-        settings::register(instance.into());
         devices_view::register(instance.into());
         // A hidden top-level window (not message-only) so it receives the
         // TaskbarCreated and WM_DEVICECHANGE broadcasts.
@@ -298,10 +289,8 @@ pub fn run() {
 
         APP.with(|a| {
             *a.borrow_mut() = Some(App {
-                settings: None,
                 shared,
                 tx: tx.clone(),
-                ui: settings::State::default(),
                 view: devices_view::State::default(),
                 taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
             })
@@ -310,9 +299,9 @@ pub fn run() {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            // Keyboard navigation (Tab, Enter, Esc) for both windows.
+            // Keyboard navigation (Tab, Enter, Esc) for the view and its dialog.
             let dialogs =
-                with_app(|a| [a.settings, devices_view::hwnd_of(&a.view)]).unwrap_or_default();
+                with_app(|a| [devices_view::hwnd_of(&a.view), confirm::hwnd()]).unwrap_or_default();
             if dialogs
                 .iter()
                 .flatten()

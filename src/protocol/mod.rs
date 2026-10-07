@@ -3,6 +3,7 @@
 
 pub mod dualsense;
 pub mod hidpp;
+pub mod onboard;
 pub mod razer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -28,6 +28,7 @@ pub struct Fonts {
     pub percent: HFONT,
     pub strong: HFONT,
     pub body: HFONT,
+    pub body_strong: HFONT,
     pub small: HFONT,
 }
 
@@ -52,6 +53,7 @@ impl Fonts {
             percent: f(22, 600),
             strong: f(16, 600),
             body: f(14, 400),
+            body_strong: f(14, 600),
             small: f(13, 400),
         }
     }
@@ -66,6 +68,7 @@ impl Drop for Fonts {
             self.percent,
             self.strong,
             self.body,
+            self.body_strong,
             self.small,
         ] {
             unsafe {
@@ -206,10 +209,10 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn px(&self, units: f32) -> i32 {
+    pub fn px(&self, units: f32) -> i32 {
         (units * self.scale).round() as i32
     }
-    fn font(&self, role: FontRole) -> HFONT {
+    pub fn font(&self, role: FontRole) -> HFONT {
         match role {
             FontRole::Name => self.fonts.name,
             FontRole::Percent => self.fonts.percent,
@@ -219,7 +222,7 @@ impl Ctx<'_> {
         }
     }
     /// Size of `text` wrapped to `width` px, at most `lines` lines (0 = any).
-    fn measure(&self, text: &str, role: FontRole, width: i32, lines: i32) -> (i32, i32) {
+    pub fn measure(&self, text: &str, role: FontRole, width: i32, lines: i32) -> (i32, i32) {
         let w: Vec<u16> = text.encode_utf16().collect();
         let mut r = RECT {
             left: 0,
@@ -866,6 +869,17 @@ pub unsafe fn fill(hdc: HDC, r: RECT, color: Color) {
 }
 
 /// Owner-drawn button: outline radius 6, text, 2 px focus ring.
+/// Visual role of an owner-drawn button (DESIGN.md: emphasis by contrast
+/// and weight, never by an accent colour).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Normal,
+    /// Main action of a section: `text.primary` border, semibold label.
+    Primary,
+    /// Chosen quick value: `surface.selected` fill, `text.primary` border.
+    Selected,
+}
+
 pub fn draw_button(
     dis: &DRAWITEMSTRUCT,
     label: &str,
@@ -873,6 +887,7 @@ pub fn draw_button(
     palette: &Palette,
     fonts: &Fonts,
     scale: f32,
+    style: ButtonStyle,
 ) {
     let r = dis.rcItem;
     let (w, h) = (r.right - r.left, r.bottom - r.top);
@@ -902,12 +917,18 @@ pub fn draw_button(
             let face =
                 palette
                     .button_face()
-                    .unwrap_or(if pressed { palette.border_card } else { bg });
+                    .unwrap_or(if pressed || style == ButtonStyle::Selected {
+                        palette.surface_selected
+                    } else {
+                        bg
+                    });
             c.fill_round_rect(x, y, bw, bh, 6.0, face);
             let border = if disabled {
                 palette.border_card
-            } else {
+            } else if style == ButtonStyle::Normal {
                 palette.border_control
+            } else {
+                palette.text_primary
             };
             c.stroke_round_rect(x, y, bw, bh, 6.0, 1.0, border, false);
             if focused {
@@ -930,7 +951,12 @@ pub fn draw_button(
             palette.text_primary
         };
         SetTextColor(mem, COLORREF(color.colorref()));
-        let old_font = SelectObject(mem, fonts.body.into());
+        let font = if style == ButtonStyle::Normal || disabled {
+            fonts.body
+        } else {
+            fonts.body_strong
+        };
+        let old_font = SelectObject(mem, font.into());
         let mut t: Vec<u16> = label.encode_utf16().collect();
         let mut tr = RECT {
             left: 0,
@@ -976,6 +1002,9 @@ pub fn button_name(kind: &PanelKind, shared: &Shared) -> String {
             match snap {
                 Some(s) if matches!(s.status, Status::Disconnected) => {
                     format!("Ajustes de {} (no disponible: desconectado)", s.info.name)
+                }
+                Some(s) if s.info.kind == crate::devices::Kind::Mouse => {
+                    format!("Ajustes de {}", s.info.name)
                 }
                 // Placeholder button for now: say so instead of looking broken.
                 Some(s) => format!("Ajustes de {}, próximamente", s.info.name),
@@ -1042,6 +1071,9 @@ mod tests {
             last_battery: None,
             saved: false,
             applied_color: None,
+            original_dpi: None,
+            profile: crate::app::Profile::NotRead,
+            backup: None,
         }
     }
 
@@ -1067,8 +1099,15 @@ mod tests {
         let mut s = Shared::default();
         s.devices.push(snap("G305"));
         let k = PanelKind::Device(s.devices[0].info.key.clone());
-        assert_eq!(button_name(&k, &s), "Ajustes de G305, próximamente");
+        // Mice open their settings page.
+        assert_eq!(button_name(&k, &s), "Ajustes de G305");
         assert!(button_enabled(&k, &s));
+        // Other device types are still placeholders.
+        let mut keyboard = snap("BlackWidow");
+        keyboard.info = DeviceInfo::new(&SUPPORTED[1], "BlackWidow");
+        let kb = PanelKind::Device(keyboard.info.key.clone());
+        s.devices.push(keyboard);
+        assert_eq!(button_name(&kb, &s), "Ajustes de BlackWidow, próximamente");
         s.devices[0].status = Status::Disconnected;
         assert_eq!(
             button_name(&k, &s),

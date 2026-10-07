@@ -22,6 +22,7 @@ pub mod feature {
     pub const ADJUSTABLE_DPI: u16 = 0x2201;
     // Read only: changing it needs host mode (0x8100), excluded from v0.1.
     pub const REPORT_RATE: u16 = 0x8060;
+    pub const ONBOARD_PROFILES: u16 = 0x8100;
 }
 
 /// Every request this application is able to send. There is intentionally no
@@ -29,27 +30,64 @@ pub mod feature {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
     /// Root fn1: protocol version with a ping byte echoed back.
-    Ping { ping: u8 },
+    Ping {
+        ping: u8,
+    },
     /// Root fn0: look up the index of a feature id.
-    GetFeature { feature: u16 },
+    GetFeature {
+        feature: u16,
+    },
     /// 0x0005 fn0.
     NameLength,
     /// 0x0005 fn1.
-    NameChunk { offset: u8 },
+    NameChunk {
+        offset: u8,
+    },
     /// 0x1000 fn0.
     BatteryStatus,
     /// 0x1004 fn1.
     UnifiedBatteryStatus,
     /// 0x2201 fn1.
-    DpiList { sensor: u8 },
+    DpiList {
+        sensor: u8,
+    },
     /// 0x2201 fn2.
-    GetDpi { sensor: u8 },
+    GetDpi {
+        sensor: u8,
+    },
     /// 0x2201 fn3. Volatile: not stored in the device profile.
-    SetDpi { sensor: u8, dpi: u16 },
+    SetDpi {
+        sensor: u8,
+        dpi: u16,
+    },
     /// 0x8060 fn0.
     ReportRateList,
     /// 0x8060 fn1.
     GetReportRate,
+    /// 0x8100 fn0: memory layout (sector size, button count…).
+    OnboardInfo,
+    /// 0x8100 fn4: sector of the active profile.
+    GetCurrentProfile,
+    /// 0x8100 fn5: 16 bytes of a memory sector. Read only.
+    MemoryRead {
+        sector: u16,
+        offset: u16,
+    },
+    /// 0x8100 fn6/fn7/fn8: write a memory sector. Only buildable through
+    /// `onboard::ProfileImage::write_requests` (the `seal` field).
+    MemoryWriteStart {
+        sector: u16,
+        offset: u16,
+        len: u16,
+        seal: super::onboard::Seal,
+    },
+    MemoryWrite {
+        data: [u8; 16],
+        seal: super::onboard::Seal,
+    },
+    MemoryWriteEnd {
+        seal: super::onboard::Seal,
+    },
 }
 
 impl Request {
@@ -63,23 +101,57 @@ impl Request {
             UnifiedBatteryStatus => feature::UNIFIED_BATTERY,
             DpiList { .. } | GetDpi { .. } | SetDpi { .. } => feature::ADJUSTABLE_DPI,
             ReportRateList | GetReportRate => feature::REPORT_RATE,
+            OnboardInfo
+            | GetCurrentProfile
+            | MemoryRead { .. }
+            | MemoryWriteStart { .. }
+            | MemoryWrite { .. }
+            | MemoryWriteEnd { .. } => feature::ONBOARD_PROFILES,
         }
     }
 
-    fn function_and_params(&self) -> (u8, [u8; 3]) {
+    fn function_and_params(&self) -> (u8, [u8; 16]) {
         use Request::*;
+        let p4 = |b: [u8; 4]| {
+            let mut p = [0u8; 16];
+            p[..4].copy_from_slice(&b);
+            p
+        };
         match *self {
-            Ping { ping } => (1, [0, 0, ping]),
-            GetFeature { feature } => (0, [(feature >> 8) as u8, feature as u8, 0]),
-            NameLength => (0, [0; 3]),
-            NameChunk { offset } => (1, [offset, 0, 0]),
-            BatteryStatus => (0, [0; 3]),
-            UnifiedBatteryStatus => (1, [0; 3]),
-            DpiList { sensor } => (1, [sensor, 0, 0]),
-            GetDpi { sensor } => (2, [sensor, 0, 0]),
-            SetDpi { sensor, dpi } => (3, [sensor, (dpi >> 8) as u8, dpi as u8]),
-            ReportRateList => (0, [0; 3]),
-            GetReportRate => (1, [0; 3]),
+            Ping { ping } => (1, p4([0, 0, ping, 0])),
+            GetFeature { feature } => (0, p4([(feature >> 8) as u8, feature as u8, 0, 0])),
+            NameLength => (0, p4([0; 4])),
+            NameChunk { offset } => (1, p4([offset, 0, 0, 0])),
+            BatteryStatus => (0, p4([0; 4])),
+            UnifiedBatteryStatus => (1, p4([0; 4])),
+            DpiList { sensor } => (1, p4([sensor, 0, 0, 0])),
+            GetDpi { sensor } => (2, p4([sensor, 0, 0, 0])),
+            SetDpi { sensor, dpi } => (3, p4([sensor, (dpi >> 8) as u8, dpi as u8, 0])),
+            ReportRateList => (0, p4([0; 4])),
+            GetReportRate => (1, p4([0; 4])),
+            OnboardInfo => (0, p4([0; 4])),
+            GetCurrentProfile => (4, p4([0; 4])),
+            MemoryRead { sector, offset } => {
+                let ([s1, s0], [o1, o0]) = (sector.to_be_bytes(), offset.to_be_bytes());
+                (5, p4([s1, s0, o1, o0]))
+            }
+            MemoryWriteStart {
+                sector,
+                offset,
+                len,
+                ..
+            } => {
+                let ([s1, s0], [o1, o0], [l1, l0]) = (
+                    sector.to_be_bytes(),
+                    offset.to_be_bytes(),
+                    len.to_be_bytes(),
+                );
+                let mut p = [0u8; 16];
+                p[..6].copy_from_slice(&[s1, s0, o1, o0, l1, l0]);
+                (6, p)
+            }
+            MemoryWrite { data, .. } => (7, data),
+            MemoryWriteEnd { .. } => (8, [0; 16]),
         }
     }
 
@@ -92,7 +164,7 @@ impl Request {
         out[1] = device;
         out[2] = feature_index;
         out[3] = (func << 4) | SOFTWARE_ID;
-        out[4..7].copy_from_slice(&params);
+        out[4..20].copy_from_slice(&params);
         out
     }
 }
@@ -233,6 +305,28 @@ mod tests {
         }
         .encode(1, 0x0b);
         assert_eq!(&r[..7], &[0x11, 0x01, 0x0b, 0x3b, 0x00, 0x06, 0x40]);
+    }
+
+    #[test]
+    fn encodes_memory_read() {
+        let r = Request::MemoryRead {
+            sector: 0x0101,
+            offset: 0x00ef,
+        }
+        .encode(1, 7);
+        assert_eq!(&r[..8], &[0x11, 0x01, 0x07, 0x5b, 0x01, 0x01, 0x00, 0xef]);
+        assert_eq!(Request::GetCurrentProfile.encode(1, 7)[3], 0x4b);
+        // No request of this application targets 0x8100 write functions (6, 7, 8).
+        for req in [
+            Request::OnboardInfo,
+            Request::GetCurrentProfile,
+            Request::MemoryRead {
+                sector: 1,
+                offset: 0,
+            },
+        ] {
+            assert!(req.encode(1, 7)[3] >> 4 <= 5);
+        }
     }
 
     #[test]

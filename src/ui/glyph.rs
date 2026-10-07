@@ -343,3 +343,11 @@ pub fn notice_icon(c: &Canvas, x: f32, y: f32, error: bool, color: Color) {
         }
     });
 }
+
+/// 16×16 check mark shown before success messages.
+pub fn check(c: &Canvas, x: f32, y: f32, color: Color) {
+    c.with_pen(color, 1.8, false, |pen| {
+        c.line(pen, x + 3.0, y + 8.5, x + 6.0, y + 11.5);
+        c.line(pen, x + 6.0, y + 11.5, x + 13.0, y + 4.5);
+    });
+}

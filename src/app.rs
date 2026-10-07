@@ -5,9 +5,10 @@
 //! [`POLL`] to refresh battery levels.
 
 use crate::config::{Config, parse_hex};
-use crate::devices::{Change, Device, DeviceInfo, DeviceKey, Error, State};
+use crate::devices::{Change, Device, DeviceInfo, DeviceKey, Error, ProfileDump, State, Transport};
 use crate::platform::hid::{HidTransport, scan};
 use crate::protocol::Battery;
+use crate::protocol::onboard::{self, Action, EditError, ProfileImage};
 use crate::protocol::razer::Rgb;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -19,13 +20,54 @@ pub const POLL: Duration = Duration::from_secs(60);
 /// Device arrival fires several notifications; wait for them to settle.
 const SETTLE: Duration = Duration::from_millis(800);
 
+/// Write gate of plan `ajustes-raton` (increment D). While false, no path
+/// sends a memory write to a real device. It is switched on only after the
+/// identical-rewrite and minimal-change tests pass on the user's mouse.
+pub const WRITES_ENABLED: bool = false;
+
+/// Proof that the user confirmed a write in the confirmation dialog. Only
+/// the dialog creates it (`Confirmed::by_dialog`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Confirmed(());
+
+impl Confirmed {
+    pub fn by_dialog() -> Self {
+        Confirmed(())
+    }
+}
+
+/// What to write back to the mouse's buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The copy taken by this app before any change.
+    Original,
+    /// Button entries of the factory (ROM) profile.
+    Factory,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Rescan,
     Refresh,
     Apply(DeviceKey, Change),
     Restore(DeviceKey),
+    /// Reads the onboard profile of a mouse (read only).
+    ReadProfile(DeviceKey),
+    /// Reassigns buttons (index, action) in the mouse's memory.
+    WriteButtons(DeviceKey, Vec<(usize, Action)>, Confirmed),
+    RestoreProfile(DeviceKey, Source, Confirmed),
     Quit,
+}
+
+/// What the UI knows about a mouse's onboard profile.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Profile {
+    #[default]
+    NotRead,
+    /// No onboard profiles, or a format this app has not verified.
+    Unsupported,
+    Failed(String),
+    Buttons(Vec<Action>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +89,11 @@ pub struct Snapshot {
     pub saved: bool,
     /// Last colour this app applied (devices cannot report theirs).
     pub applied_color: Option<Rgb>,
+    /// DPI read when the device was first seen ("Restaurar originales").
+    pub original_dpi: Option<u16>,
+    pub profile: Profile,
+    /// Original profile copy on this PC: `Ok(date)` or the reason it failed.
+    pub backup: Option<std::result::Result<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +120,64 @@ struct Entry {
     snapshot: Snapshot,
     /// DPI read the first time the device was seen, before re-applying.
     original_dpi: Option<u16>,
+    /// Last onboard-profile read (raw sectors stay inside the worker).
+    profile: Option<std::result::Result<crate::devices::ProfileDump, Error>>,
+    backup: Option<std::result::Result<String, String>>,
+}
+
+impl Entry {
+    fn profile_view(&self) -> Profile {
+        match &self.profile {
+            None => Profile::NotRead,
+            Some(Err(Error::Unsupported)) => Profile::Unsupported,
+            Some(Err(e)) => Profile::Failed(e.to_string()),
+            Some(Ok(d)) => {
+                match crate::protocol::onboard::parse_buttons(&d.user, d.info.button_count) {
+                    Some(b) => Profile::Buttons(b),
+                    None => Profile::Failed("perfil incompleto".into()),
+                }
+            }
+        }
+    }
+}
+
+type Build = fn(&ProfileDump, &ProfileDump) -> std::result::Result<ProfileImage, EditError>;
+
+fn edit_error(e: EditError) -> String {
+    match e {
+        EditError::LeftButton => "el botón izquierdo no se puede cambiar.",
+        EditError::NoSuchButton => "ese botón no existe en este ratón.",
+        EditError::NotAssignable => "esa acción no se puede asignar.",
+        EditError::BadProfile => "el perfil del ratón no es el esperado; no se escribe nada.",
+    }
+    .into()
+}
+
+/// Builds the image from a fresh read (`build(current, saved)`) and writes
+/// it. If the write or its read-back fails, writes back the bytes read
+/// before, so a failed save leaves the mouse as it was.
+fn write_checked(
+    dev: &mut dyn Device,
+    t: &dyn Transport,
+    saved: &ProfileDump,
+    build: impl FnOnce(&ProfileDump, &ProfileDump) -> std::result::Result<ProfileImage, EditError>,
+) -> std::result::Result<(), String> {
+    let before = dev
+        .read_profile(t)
+        .map_err(|e| format!("no se pudo leer el perfil ({e})."))?;
+    let image = build(&before, saved).map_err(edit_error)?;
+    let Err(err) = dev.write_profile(t, &image) else {
+        return Ok(());
+    };
+    let undo = onboard::restore_image(&before.user, &before.user, before.sector, &before.directory)
+        .map_err(edit_error)
+        .and_then(|img| dev.write_profile(t, &img).map_err(|e| e.to_string()));
+    Err(match undo {
+        Ok(()) => format!("no se pudo guardar ({err}); el perfil se dejó como estaba."),
+        Err(e2) => format!(
+            "no se pudo guardar ({err}) ni volver al perfil anterior ({e2}). Usa «Restaurar perfil original»."
+        ),
+    })
 }
 
 /// Drops queued `Rescan`s (one rescan covers them all) and returns the first
@@ -144,6 +249,46 @@ impl Worker {
                         self.restore(i)
                     }
                 }
+                Ok(Command::ReadProfile(key)) => {
+                    if let Some(i) = self.index(&key) {
+                        self.read_profile(i)
+                    }
+                }
+                Ok(Command::WriteButtons(key, edits, Confirmed(()))) => {
+                    if let Some(i) = self.index(&key) {
+                        self.write_profile(i, "Botones guardados en el ratón.", |d, _| {
+                            onboard::apply_buttons(
+                                &d.user,
+                                d.sector,
+                                &d.directory,
+                                d.info.button_count,
+                                &edits,
+                            )
+                        })
+                    }
+                }
+                Ok(Command::RestoreProfile(key, source, Confirmed(()))) => {
+                    if let Some(i) = self.index(&key) {
+                        let (done, build): (&str, Build) = match source {
+                            Source::Original => ("Perfil original restaurado.", |d, saved| {
+                                if saved.sector != d.sector || saved.info != d.info {
+                                    return Err(EditError::BadProfile);
+                                }
+                                onboard::restore_image(&saved.user, &d.user, d.sector, &d.directory)
+                            }),
+                            Source::Factory => ("Botones de fábrica restaurados.", |d, _| {
+                                onboard::factory_buttons(
+                                    &d.user,
+                                    &d.rom,
+                                    d.sector,
+                                    &d.directory,
+                                    d.info.button_count,
+                                )
+                            }),
+                        };
+                        self.write_profile(i, done, build)
+                    }
+                }
                 Ok(Command::Quit) | Err(RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -166,6 +311,9 @@ impl Worker {
                 Snapshot {
                     saved: saved.is_some(),
                     applied_color: saved.and_then(|c| c.color.as_deref()).and_then(parse_hex),
+                    original_dpi: e.original_dpi,
+                    profile: e.profile_view(),
+                    backup: e.backup.clone(),
                     ..e.snapshot.clone()
                 }
             })
@@ -232,8 +380,13 @@ impl Worker {
                     last_battery: None,
                     saved: false,
                     applied_color: None,
+                    original_dpi: None,
+                    profile: Profile::NotRead,
+                    backup: None,
                 },
                 original_dpi: None,
+                profile: None,
+                backup: None,
             });
         }
         self.entries.sort_by(|a, b| {
@@ -267,6 +420,86 @@ impl Worker {
     }
 
     /// Re-applies saved settings; the error text names the device.
+    fn read_profile(&mut self, i: usize) {
+        let Some(api) = &self.api else { return };
+        let e = &mut self.entries[i];
+        let Some(dev) = e.device.as_mut() else { return };
+        let read = HidTransport::open(api, dev.path()).and_then(|t| dev.read_profile(&t));
+        if let Ok(dump) = &read {
+            e.backup = Some(Self::ensure_backup(&e.snapshot.info.key, dump, || {
+                HidTransport::open(api, dev.path()).and_then(|t| dev.read_profile(&t))
+            }));
+        }
+        e.profile = Some(read);
+        self.publish(None);
+    }
+
+    /// Takes the original copy the first time; it is verified with a second
+    /// read from the device. An existing copy is only checked for validity
+    /// (the profile may have changed since, by design).
+    fn ensure_backup(
+        key: &DeviceKey,
+        dump: &crate::devices::ProfileDump,
+        reread: impl FnOnce() -> crate::devices::Result<crate::devices::ProfileDump>,
+    ) -> std::result::Result<String, String> {
+        if let Some(existing) = crate::backup::load_original(key)? {
+            return Ok(existing.created);
+        }
+        let second = reread().map_err(|e| format!("segunda lectura: {e}"))?;
+        if &second != dump {
+            return Err("dos lecturas del ratón no coinciden".into());
+        }
+        crate::backup::save_original(key, dump, &crate::backup::today()).map(|b| b.created)
+    }
+
+    /// Writes a new image of the active profile and reports the result.
+    fn write_profile(
+        &mut self,
+        i: usize,
+        done: &str,
+        build: impl FnOnce(&ProfileDump, &ProfileDump) -> std::result::Result<ProfileImage, EditError>,
+    ) {
+        let name = self.entries[i].snapshot.info.name.clone();
+        let message = match self.try_write(i, build) {
+            Ok(()) => Message {
+                ok: true,
+                text: format!("{name}: {done}"),
+            },
+            Err(text) => Message {
+                ok: false,
+                text: format!("{name}: {text}"),
+            },
+        };
+        self.read_profile(i);
+        self.publish(Some(message));
+    }
+
+    /// Refused while the gate is closed, while G HUB runs, or without a
+    /// valid original copy on this PC.
+    fn try_write(
+        &mut self,
+        i: usize,
+        build: impl FnOnce(&ProfileDump, &ProfileDump) -> std::result::Result<ProfileImage, EditError>,
+    ) -> std::result::Result<(), String> {
+        if !WRITES_ENABLED {
+            return Err(
+                "el guardado de botones está desactivado hasta completar la prueba de escritura."
+                    .into(),
+            );
+        }
+        if (self.conflicts)().contains(&"Logitech G HUB") {
+            return Err("cierra G HUB para guardar los botones.".into());
+        }
+        let e = &mut self.entries[i];
+        let saved = crate::backup::load_original(&e.snapshot.info.key)?
+            .ok_or("no hay copia del perfil original en este PC; no se escribe nada.")?;
+        let api = self.api.as_ref().ok_or("no hay acceso HID.")?;
+        let dev = e.device.as_mut().ok_or("está desconectado.")?;
+        let t =
+            HidTransport::open(api, dev.path()).map_err(|e| format!("no se pudo abrir ({e})."))?;
+        write_checked(dev.as_mut(), &t, &saved.dump, build)
+    }
+
     fn reapply(&mut self, i: usize) -> Result<(), String> {
         let key = self.entries[i].snapshot.info.key.clone();
         let Some(changes) = self.config.get(&key).map(|s| s.changes()) else {
@@ -365,6 +598,134 @@ mod tests {
     use super::*;
     use crate::devices::DeviceKey;
     use std::sync::mpsc::channel;
+
+    /// A mouse whose profile lives in memory; `fail` makes the next N
+    /// writes corrupt memory and report a read-back mismatch.
+    struct MemMouse {
+        info: DeviceInfo,
+        path: std::ffi::CString,
+        dump: ProfileDump,
+        fail: usize,
+        writes: usize,
+    }
+
+    impl Device for MemMouse {
+        fn info(&self) -> &DeviceInfo {
+            &self.info
+        }
+        fn path(&self) -> &std::ffi::CString {
+            &self.path
+        }
+        fn read_state(&mut self, _: &dyn Transport) -> crate::devices::Result<State> {
+            Ok(State::default())
+        }
+        fn apply(&mut self, _: &dyn Transport, _: Change) -> crate::devices::Result<()> {
+            Ok(())
+        }
+        fn read_profile(&mut self, _: &dyn Transport) -> crate::devices::Result<ProfileDump> {
+            Ok(self.dump.clone())
+        }
+        fn write_profile(
+            &mut self,
+            _: &dyn Transport,
+            image: &ProfileImage,
+        ) -> crate::devices::Result<()> {
+            self.writes += 1;
+            if self.fail > 0 {
+                self.fail -= 1;
+                // Half-written: the device holds garbage until rewritten.
+                self.dump.user[0x30] ^= 0xff;
+                return Err(Error::Protocol("la memoria releída no coincide"));
+            }
+            self.dump.user = image.bytes().to_vec();
+            Ok(())
+        }
+    }
+
+    fn mouse(fail: usize) -> MemMouse {
+        use onboard::samples;
+        MemMouse {
+            info: DeviceInfo::new(&crate::devices::SUPPORTED[0], "G305"),
+            path: std::ffi::CString::new("x").unwrap(),
+            dump: ProfileDump {
+                info: onboard::Info {
+                    profile_format: 3,
+                    profile_count: 1,
+                    button_count: 6,
+                    sector_size: 255,
+                },
+                sector: 1,
+                directory: samples::directory(),
+                user: samples::user_profile(),
+                rom: samples::rom_profile(),
+            },
+            fail,
+            writes: 0,
+        }
+    }
+
+    fn edits(d: &ProfileDump, _: &ProfileDump) -> std::result::Result<ProfileImage, EditError> {
+        onboard::apply_buttons(
+            &d.user,
+            d.sector,
+            &d.directory,
+            6,
+            &[(3, Action::Mouse(0x08))],
+        )
+    }
+
+    #[test]
+    fn write_then_restore_original() {
+        let t = crate::devices::fake::FakeTransport::new(|_| vec![]);
+        let mut m = mouse(0);
+        let saved = m.dump.clone();
+        write_checked(&mut m, &t, &saved, edits).unwrap();
+        assert_eq!(
+            onboard::parse_buttons(&m.dump.user, 6).unwrap()[3],
+            Action::Mouse(0x08)
+        );
+        write_checked(&mut m, &t, &saved, |d, s| {
+            onboard::restore_image(&s.user, &d.user, d.sector, &d.directory)
+        })
+        .unwrap();
+        assert_eq!(m.dump.user, saved.user);
+    }
+
+    #[test]
+    fn failed_write_puts_the_previous_bytes_back() {
+        let t = crate::devices::fake::FakeTransport::new(|_| vec![]);
+        let mut m = mouse(1);
+        let saved = m.dump.clone();
+        let err = write_checked(&mut m, &t, &saved, edits).unwrap_err();
+        assert!(err.contains("se dejó como estaba"), "{err}");
+        assert_eq!(m.dump.user, saved.user);
+        assert_eq!(m.writes, 2);
+        // When the undo also fails, the user is told how to recover.
+        let mut m = mouse(2);
+        let err = write_checked(&mut m, &t, &saved, edits).unwrap_err();
+        assert!(err.contains("Restaurar perfil original"), "{err}");
+    }
+
+    #[test]
+    fn rejected_images_write_nothing() {
+        let t = crate::devices::fake::FakeTransport::new(|_| vec![]);
+        let mut m = mouse(0);
+        let saved = m.dump.clone();
+        let left = |d: &ProfileDump, _: &ProfileDump| {
+            onboard::apply_buttons(
+                &d.user,
+                d.sector,
+                &d.directory,
+                6,
+                &[(0, Action::Mouse(0x02))],
+            )
+        };
+        assert_eq!(
+            write_checked(&mut m, &t, &saved, left),
+            Err("el botón izquierdo no se puede cambiar.".into())
+        );
+        assert_eq!(m.writes, 0);
+    }
 
     #[test]
     fn coalescing_keeps_other_commands() {
