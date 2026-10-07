@@ -21,9 +21,11 @@ pub const POLL: Duration = Duration::from_secs(60);
 const SETTLE: Duration = Duration::from_millis(800);
 
 /// Write gate of plan `ajustes-raton` (increment D). While false, no path
-/// sends a memory write to a real device. It is switched on only after the
-/// identical-rewrite and minimal-change tests pass on the user's mouse.
-pub const WRITES_ENABLED: bool = false;
+/// sends a memory write to a real device. Switched on after the
+/// identical-rewrite and minimal-change tests passed on a G305 (2026-10-07,
+/// `docs/protocolos/logitech-hidpp.md`). Set it to false to make every
+/// mouse's buttons read only again.
+pub const WRITES_ENABLED: bool = true;
 
 /// Proof that the user confirmed a write in the confirmation dialog. Only
 /// the dialog creates it (`Confirmed::by_dialog`).
@@ -108,6 +110,10 @@ pub struct Shared {
     pub message: Option<Message>,
     /// Incremented with every new message, so the UI knows a request ended.
     pub seq: u64,
+    /// Incremented only when a profile write ends, with its result, so other
+    /// messages (e.g. a rescan) are never taken for the write's outcome.
+    pub writes: u64,
+    pub write_result: Option<Message>,
     /// Names of other peripheral software currently running.
     pub conflicts: Vec<&'static str>,
     pub scanned: bool,
@@ -471,6 +477,11 @@ impl Worker {
             },
         };
         self.read_profile(i);
+        {
+            let mut s = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            s.writes += 1;
+            s.write_result = Some(message.clone());
+        }
         self.publish(Some(message));
     }
 

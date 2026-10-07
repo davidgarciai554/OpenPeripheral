@@ -149,18 +149,21 @@ Pictogramas propios de trazo (1,6 px; 1,5 px en pila y cable), monocromos en `te
     - Clics y navegación: Clic izquierdo, Clic derecho, Clic central, Atrás, Adelante, Doble clic.
     - Multimedia: Reproducir / pausa, Siguiente, Anterior, Subir volumen, Bajar volumen, Silenciar.
     - Otras: Atajo de teclado…, Desactivar.
+    - **Implementado (desviación 4):** solo Clic izquierdo, Clic derecho, Clic central, Atrás, Adelante y Atajo de teclado…, cuyo formato se ha observado en el ratón. Doble clic, Multimedia y Desactivar se añadirán cuando haya evidencia de su codificación. Si la acción actual es una función del perfil que no se puede escribir, aparece «Sin cambios: …».
   - Con **«Atajo de teclado…»** aparece un campo de captura (de solo lectura, que muestra «Ctrl + C») con «Borrar». Ayuda: «Con el campo seleccionado, pulsa la combinación. Tab y Esc no se capturan: sirven para salir del campo».
   - «Aceptar» y «Cancelar» cierran la edición de la fila.
 - **Cambio pendiente:** la fila muestra la acción nueva en seminegrita y la etiqueta con contorno «Cambiado · antes: Adelante».
 - **Barra de pendientes**, al pie de la sección y solo si hay cambios: «**N cambios sin guardar.** Todavía no se han escrito en el ratón», con «Descartar» y «Guardar en el ratón…». Al salir con cambios pendientes se pregunta si se descartan.
 - **Confirmación** (diálogo modal sobre `overlay.scrim`):
   - Título «¿Guardar N cambios en la memoria del ratón?», con la lista de cambios.
-  - Texto: «El ratón los conservará aunque cierres OpenPeripheral o lo uses en otro PC. Antes se guardará una copia del perfil actual para poder restaurarlo».
+  - Texto: «El ratón los conservará aunque cierres OpenPeripheral o lo uses en otro PC. Si la comprobación de la escritura falla, OpenPeripheral deja el perfil como estaba» (desviación 5).
   - Botones «Cancelar» (con el foco inicial) y «Guardar en el ratón». Esc cancela; al cerrar, el foco vuelve a «Guardar en el ratón…».
 - **Guardando:** «Guardando en el ratón… No apagues ni desconectes el ratón hasta que termine». La sección se bloquea.
 - **Guardado:** marca de verificación y «Botones guardados en el ratón. Se comprobó la escritura leyendo de nuevo el perfil».
 - **Error:** panel de alerta con «**Error:** no se pudieron guardar los botones», la causa, «Tus cambios siguen pendientes en esta pantalla», y los botones «Reintentar» y «Restaurar perfil original…».
 - **Copia y restauración:** «Copia del perfil original guardada en este PC el <fecha>» y «Restaurar perfil original…», con su propia confirmación («Se escribirá en el ratón la copia guardada el <fecha>. Se perderán los botones que hayas cambiado»; Cancelar / Restaurar).
+- **Valores de fábrica…** (añadido por decisión del usuario en el plan): copia los botones del perfil de fábrica del ratón al perfil de usuario y deja el resto igual. Tiene su propia confirmación («¿Volver a los botones de fábrica?»; Cancelar / Restaurar botones de fábrica).
+- **Bloqueo por G HUB** (decisión del usuario): con G HUB en ejecución, «Guardar en el ratón…», «Restaurar perfil original…» y «Valores de fábrica…» se deshabilitan y aparece «Cierra G HUB para guardar los botones». El servicio `lghub_updater` no cuenta.
 - **Ratón no compatible**, o protocolo no verificado: borde discontinuo y «Este ratón todavía no permite cambiar sus botones desde OpenPeripheral». No se muestra ningún control que no funcione.
 
 #### Tasa de sondeo y Restaurar
@@ -337,16 +340,12 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 
 ### Supuestos y pendientes
 
-- **Viabilidad del mapeo de botones (bloqueante para implementarlo):** el diseño da por hecho que se puede leer, copiar, escribir, verificar y restaurar el perfil integrado del G305 (HID++ 0x8100). Nada de eso está comprobado, y en el plan v0.1 la escritura persistente estaba excluida por riesgo. El plan de implementación debe empezar por:
-  - investigar el formato del perfil solo con lecturas;
-  - guardar una copia verificada;
-  - probar la restauración, con la aprobación expresa del usuario para cada escritura.
-
-  Si resulta inviable o arriesgado, la sección «Botones» se rediseña o pasa a reasignación por software.
+- **Viabilidad del mapeo de botones: resuelta el 2026-10-07.** El perfil integrado del G305 (HID++ 0x8100) se ha leído, copiado, escrito, verificado y restaurado. Hubo una reescritura idéntica y un cambio real de un botón lateral, comprobado por el usuario, con vuelta a la copia verificada byte a byte. Cada escritura se hizo con su permiso expreso. Detalles en `docs/protocolos/logitech-hidpp.md`.
 - Los valores rápidos 400, 800, 1600 y 3200 son una propuesta. Solo se muestran los que estén dentro del rango del ratón.
 
 - El enlace «Ver dispositivos compatibles» apunta provisionalmente a la tabla del README, hasta que exista la URL pública del repositorio.
-- La pantalla de ajustes de cada dispositivo está por diseñar.
+- Las pantallas de ajustes de teclados, cascos y mandos están por diseñar (se partirá de la estructura de «Ajustes del ratón»).
+- **Selector «Acción» en tema oscuro (decisión pendiente):** para que no se vea claro, se le aplica el tema `DarkMode_CFD` con `SetWindowTheme`. La API es documentada, pero ese nombre de tema no; si Windows no lo reconoce, el selector se ve claro sin otros efectos. Esto choca con el criterio de la desviación 3. El usuario debe decidir si se mantiene o se retira.
 - **Decisión técnica pendiente (planificación):** los controles clásicos actuales no admiten este diseño. Hay que elegir cómo dibujar la ventana a medida sin perder accesibilidad (nombres, foco y teclado), alto contraste ni bajo consumo. La elección afecta a rendimiento, accesibilidad y tamaño del binario, así que necesita su propio plan aprobado.
 
 ### Aprobación
@@ -385,12 +384,21 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 | 2026-10-06 | Accesibilidad y teclado | Árbol UIA nativo y `SendInput` | Panel con resumen completo; botones «Ajustes de X, próximamente»; Tab, Mayús+Tab, Enter, Espacio y Esc | Conforme con la desviación 1 | Narrador no probado por el usuario |
 | 2026-10-06 | Desconexión real | El usuario desconecta un dispositivo con la vista abierta | Observación del usuario | Conforme: «Desconectado» y vuelve al reconectar | — |
 | 2026-10-06 | Alto contraste y escala 150/200 % | — | — | Bloqueado/no verificado | Lo activará el usuario |
+| 2026-10-06 | Ajustes del ratón: navegación y DPI | Build de depuración, G305 real, 1144 y 420 px | Árbol UIA, `SendInput` y capturas | Conforme: entrar y volver con foco devuelto, Tab, Enter en el campo, Esc, valor rápido, aplicar y releer, error con sugerencias y borde de 2 px, restaurar | — |
+| 2026-10-06 | Desplazamiento con rueda | Captura real de pantalla, ráfagas de rueda | Sin restos tras corregir el desplazamiento | Conforme | Pendiente de confirmar por el usuario con su ratón |
+| 2026-10-07 | Botones: tabla, editor de fila, captura de atajo y barra de pendientes | Build de depuración, G305 real, 1144 px, tema oscuro | Árbol UIA y captura; Ctrl+Mayús+V y F5 capturados, Mayús sola ignorada, Tab y Mayús+Tab no se capturan | Conforme: fila resaltada, «Cambiado · antes: …», barra con «Descartar» y «Guardar en el ratón…» | Desviaciones 4 y 5 |
+| 2026-10-07 | Diálogo de confirmación | Árbol UIA de la ventana del diálogo | Título y texto correctos; el foco inicial en «Cancelar» | Conforme | El usuario pulsó «Restaurar» a mano: el clic automatizado fue bloqueado por la herramienta |
+| 2026-10-07 | Puerta de escritura | G305 real, G HUB cerrado, batería 90 % | Relecturas de solo lectura de los sectores 0x0000, 0x0001 y 0x0101 | Conforme: la reescritura idéntica y el cambio con restauración dejan los tres sectores idénticos a la copia | Efecto físico del cambio comprobado por el usuario |
+| 2026-10-07 | Recursos (release, 573 KB) | Página del ratón abierta, 30 s en reposo, y luego ventana cerrada | Contadores del proceso | CPU ≈ 0 (0,03 s en 30 s); GDI 36 y USER 96 estables; memoria privada 2,8–3,1 MB; working set 20 MB | El working set supera los 15 MB del plan v0.1. La diferencia son páginas compartidas de DLL del sistema (controles comunes v6, temas y GDI+) que siguen cargadas; la memoria propia es de unos 3 MB |
+| 2026-10-07 | Desconexión con la página de ajustes abierta, alto contraste y Narrador | — | — | Bloqueado/no verificado | Pendiente del usuario |
 
 ### Desviaciones aprobadas
 
 1. **Rol de la tarjeta (aprobada por el usuario en el plan):** UI Automation la expone como «panel» cuyo nombre es el resumen completo, no como «región» con campos navegables por separado.
-2. **Botón «Ajustes» como marcador (decisión del usuario, 2026-10-06):** se muestra, pero no hace nada hasta diseñar la pantalla de ajustes. Su nombre accesible añade «, próximamente». Las entradas por dispositivo del menú de la bandeja abren la vista.
+2. **Botón «Ajustes» como marcador (decisión del usuario, 2026-10-06):** en teclados y mandos se muestra, pero no hace nada hasta diseñar su pantalla, y su nombre accesible añade «, próximamente». En ratones abre «Ajustes del ratón». Las entradas por dispositivo del menú de la bandeja abren la vista.
 3. **Barra de desplazamiento:** cuando el contenido no cabe, aparece la barra nativa, que es clara también en tema oscuro, porque oscurecerla requiere API no documentadas, excluidas por el plan. La ventana se abre con el ancho del diseño (3 columnas), así que con 1 a 3 dispositivos no se ve. Seguimiento: decidir si se dibuja una barra propia.
+4. **Acciones del selector (plan `ajustes-raton`, 2026-10-07):** solo se ofrecen las acciones cuyo formato se ha observado en el ratón; ver «Botones». Doble clic, Multimedia y Desactivar quedan pendientes de evidencia.
+5. **Texto del diálogo de guardado:** el diseño decía «Antes se guardará una copia del perfil actual». La aplicación guarda una única copia original, que nunca se sobrescribe, y si la comprobación falla vuelve a escribir lo que había. El texto se ajustó para no prometer algo que no ocurre. Pendiente de confirmación del usuario.
 
 ## Regresión visual automatizada
 

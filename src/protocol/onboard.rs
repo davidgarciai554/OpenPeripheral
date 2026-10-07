@@ -243,8 +243,16 @@ pub fn restore_image(
     directory: &[u8],
 ) -> Result<ProfileImage, EditError> {
     let sector = UserSector::new(sector, directory).ok_or(EditError::BadProfile)?;
-    if !crc_ok(saved) || saved.len() != current.len() {
+    if !crc_ok(saved) || saved.len() != current.len() || saved.len() < BUTTONS_OFFSET + 6 {
         return Err(EditError::BadProfile);
+    }
+    // A copy without a left click (e.g. taken after another program
+    // remapped it) is never written back.
+    let left: [u8; 4] = saved[BUTTONS_OFFSET..BUTTONS_OFFSET + 4]
+        .try_into()
+        .unwrap_or_default();
+    if Action::decode(left) != Action::Mouse(0x01) {
+        return Err(EditError::LeftButton);
     }
     Ok(ProfileImage {
         sector,
@@ -571,5 +579,13 @@ mod tests {
         let mut tampered = user.clone();
         tampered[0x21] ^= 1;
         assert!(restore_image(&tampered, &user, 1, &samples::directory()).is_err());
+        // A valid copy whose left button is not a left click is refused.
+        let mut no_left = user.clone();
+        no_left[0x23] = 0x02;
+        let no_left = with_crc(no_left);
+        assert_eq!(
+            restore_image(&no_left, &user, 1, &samples::directory()),
+            Err(EditError::LeftButton)
+        );
     }
 }

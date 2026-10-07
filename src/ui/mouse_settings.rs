@@ -834,8 +834,12 @@ pub(crate) fn refresh(view: HWND) {
 
     // A request finished: the worker published a newer message.
     let (mut pending, mut applied, mut restore_text) = (pending, applied, restore_text);
-    if let Some((seq, what)) = pending {
-        if shared.seq != seq {
+    if let Some((mark, what)) = pending {
+        let done = match what {
+            Pending::Buttons(_) => shared.writes != mark,
+            _ => shared.seq != mark,
+        };
+        if done {
             let ok = shared.message.as_ref().is_some_and(|m| m.ok);
             match what {
                 Pending::Apply(v) => applied = Some((ok, v)),
@@ -843,7 +847,7 @@ pub(crate) fn refresh(view: HWND) {
                     restore_text = shared.message.as_ref().map(|m| (m.ok, m.text.clone()));
                     fill_field_from_device(view);
                 }
-                Pending::Buttons(what) => finish_write(what, shared.message.as_ref()),
+                Pending::Buttons(what) => finish_write(what, shared.write_result.as_ref()),
             }
             pending = None;
         }
@@ -2652,7 +2656,7 @@ fn send_write(view: HWND, what: Write, command: impl FnOnce(DeviceKey) -> Comman
     };
     let key = with_app(|a| {
         a.view.mouse.as_mut().map(|m| {
-            m.pending = Some((shared.seq, Pending::Buttons(what)));
+            m.pending = Some((shared.writes, Pending::Buttons(what)));
             m.buttons_result = None;
             if what != Write::Save {
                 // "Se perderán los botones que hayas cambiado."
@@ -2744,6 +2748,16 @@ fn confirm_restore(view: HWND, source: Source) {
 
 /// Leaves the page; with button changes pending, asks first.
 fn request_leave(view: HWND) {
+    // Stay until a write ends, so its result (or error) is always shown.
+    let writing = with_app(|a| {
+        a.view
+            .mouse
+            .as_ref()
+            .is_some_and(|m| matches!(m.pending, Some((_, Pending::Buttons(_)))))
+    });
+    if writing == Some(true) {
+        return;
+    }
     let n = with_app(|a| a.view.mouse.as_ref().map(|m| m.edits.len()))
         .flatten()
         .unwrap_or(0);
