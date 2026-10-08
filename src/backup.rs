@@ -101,6 +101,9 @@ pub fn from_text(text: &str) -> Result<Backup, String> {
         directory: sector("directory", &r.directory)?,
         user: sector("user", &r.user)?,
         rom: sector("rom", &r.rom)?,
+        // Limits are read from the device, never from a file.
+        dpi: None,
+        effects: Vec::new(),
     };
     if !onboard::crc_ok(&dump.directory) || !onboard::crc_ok(&dump.user) {
         return Err("la suma de comprobación no coincide".into());
@@ -217,6 +220,8 @@ mod tests {
             directory: samples::directory(),
             user: samples::user_profile(),
             rom: samples::rom_profile(),
+            dpi: None,
+            effects: Vec::new(),
         }
     }
 

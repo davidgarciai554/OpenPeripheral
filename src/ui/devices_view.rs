@@ -548,6 +548,11 @@ pub(super) fn relayout(view: HWND) {
     }
 }
 
+/// The mouse page's scrolling content window and fixed bar.
+fn mouse_windows() -> Option<(HWND, HWND, i32)> {
+    with_app(|a| a.view.mouse.as_ref().map(|m| (m.content, m.bar, m.bar_h))).flatten()
+}
+
 fn relayout_mouse(view: HWND) {
     let g = geometry(view);
     let mut rc = RECT::default();
@@ -555,19 +560,43 @@ fn relayout_mouse(view: HWND) {
         let _ = GetClientRect(view, &mut rc);
     }
     let scroll = with_app(|a| a.view.scroll).unwrap_or(0);
-    let content = mouse_settings::layout(view, &g, scroll);
-    let clamped = scroll.clamp(0, (content - rc.bottom).max(0));
+    let height = mouse_settings::layout(view, &g, scroll);
+    let Some((content, bar, bar_h)) = mouse_windows() else {
+        return;
+    };
+    // The page shows above the bar; the bar sits on the bottom edge.
+    let page = (rc.bottom - bar_h).max(0);
+    let clamped = scroll.clamp(0, (height - page).max(0));
     if clamped != scroll {
         with_app(|a| a.view.scroll = clamped);
         mouse_settings::layout(view, &g, clamped);
     }
     unsafe {
+        let _ = SetWindowPos(
+            content,
+            None,
+            0,
+            0,
+            rc.right,
+            page,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = SetWindowPos(
+            bar,
+            None,
+            0,
+            page,
+            rc.right,
+            bar_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = ShowWindow(bar, if bar_h > 0 { SW_SHOWNA } else { SW_HIDE });
         let si = SCROLLINFO {
             cbSize: size_of::<SCROLLINFO>() as u32,
             fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
             nMin: 0,
-            nMax: content - 1,
-            nPage: rc.bottom.max(0) as u32,
+            nMax: height - 1,
+            nPage: page as u32,
             nPos: clamped,
             ..Default::default()
         };
@@ -635,8 +664,15 @@ pub(super) fn ensure_visible(view: HWND, child: HWND) {
                 y: r.bottom,
             },
         ];
-        MapWindowPoints(None, Some(view), &mut pts);
-        let _ = GetClientRect(view, &mut rc);
+        // On the mouse page only the content scrolls; the bar is always
+        // visible, so its controls never need scrolling.
+        let target = match mouse_windows() {
+            Some((content, ..)) if IsChild(content, child).as_bool() => content,
+            Some(_) => return,
+            None => view,
+        };
+        MapWindowPoints(None, Some(target), &mut pts);
+        let _ = GetClientRect(target, &mut rc);
         let margin = (16.0 * scale_of(view)) as i32;
         let delta = if pts[0].y < 0 {
             pts[0].y - margin
@@ -678,8 +714,9 @@ fn scroll_by(view: HWND, delta: i32) {
         si.fMask = SIF_POS;
         si.nPos = new;
         SetScrollInfo(view, SB_VERT, &si, true);
+        let target = mouse_windows().map_or(view, |(content, ..)| content);
         ScrollWindowEx(
-            view,
+            target,
             0,
             old - new,
             None,
@@ -688,7 +725,7 @@ fn scroll_by(view: HWND, delta: i32) {
             None,
             SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
         );
-        let _ = UpdateWindow(view);
+        let _ = UpdateWindow(target);
     }
 }
 
@@ -730,8 +767,8 @@ fn paint_view(view: HWND) {
         let old = SelectObject(mem, bmp.into());
         panel::fill(mem, rc, palette.bg_app);
         let mouse_page = with_app(|a| a.view.mouse.is_some()) == Some(true);
+        // The mouse page paints itself in its content window.
         if mouse_page {
-            mouse_settings::paint(mem, &palette, g.scale, scroll);
         } else if let Some(f) = fonts {
             SetBkMode(mem, TRANSPARENT);
             let draw = |text: &str, font: HFONT, color: theme::Color, y: i32| {

@@ -676,8 +676,7 @@ fn device(ctx: &Ctx, snap: &Snapshot, width: i32, height: i32) -> Layout {
         extra.push((y, h, w));
         y += h + gap;
     }
-    if let Some(c) = snap.applied_color {
-        let label = text::color_label(snap);
+    if let Some((label, color)) = text::color_row(snap) {
         let (lw, lh) = ctx.measure(label, FontRole::Body, inner, 1);
         items.push(Item::Text {
             rect: RECT {
@@ -691,29 +690,33 @@ fn device(ctx: &Ctx, snap: &Snapshot, width: i32, height: i32) -> Layout {
             color: p.text_notice,
             lines: 1,
         });
-        let sx = pad + lw + ctx.px(8.0);
-        let sw = ctx.px(14.0);
-        items.push(Item::Swatch {
-            x: sx as f32,
-            y: (y + (lh - sw) / 2) as f32,
-            color: Color((c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32),
-        });
-        let hx = sx + sw + ctx.px(8.0);
-        let hex = to_hex(c);
-        let (hw, _) = ctx.measure(&hex, FontRole::Body, inner, 1);
-        items.push(Item::Text {
-            rect: RECT {
-                left: hx,
-                top: y,
-                right: hx + hw + 2,
-                bottom: y + lh,
-            },
-            text: hex,
-            font: FontRole::Body,
-            color: p.text_secondary,
-            lines: 1,
-        });
-        extra.push((y, lh, hx + hw - pad));
+        let mut right = pad + lw;
+        if let Some(c) = color {
+            let sx = pad + lw + ctx.px(8.0);
+            let sw = ctx.px(14.0);
+            items.push(Item::Swatch {
+                x: sx as f32,
+                y: (y + (lh - sw) / 2) as f32,
+                color: Color((c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32),
+            });
+            let hx = sx + sw + ctx.px(8.0);
+            let hex = to_hex(c);
+            let (hw, _) = ctx.measure(&hex, FontRole::Body, inner, 1);
+            items.push(Item::Text {
+                rect: RECT {
+                    left: hx,
+                    top: y,
+                    right: hx + hw + 2,
+                    bottom: y + lh,
+                },
+                text: hex,
+                font: FontRole::Body,
+                color: p.text_secondary,
+                lines: 1,
+            });
+            right = hx + hw;
+        }
+        extra.push((y, lh, right - pad));
         y += lh + gap;
     }
     if disconnected && snap.saved {
@@ -978,6 +981,79 @@ pub fn draw_button(
     }
 }
 
+/// Colour swatch of the light section: the colour itself with a control
+/// border; the chosen one has a 2 px `text.primary` border and a check mark
+/// (DESIGN.md: never chosen by colour alone); focus is the usual ring.
+pub fn draw_swatch(
+    dis: &DRAWITEMSTRUCT,
+    color: Color,
+    bg: Color,
+    palette: &Palette,
+    scale: f32,
+    chosen: bool,
+) {
+    let r = dis.rcItem;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    unsafe {
+        let hdc = dis.hDC;
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w, h);
+        let old_bmp = SelectObject(mem, bmp.into());
+        fill(
+            mem,
+            RECT {
+                left: 0,
+                top: 0,
+                right: w,
+                bottom: h,
+            },
+            bg,
+        );
+        let has = |f: windows::Win32::UI::Controls::ODS_FLAGS| dis.itemState.0 & f.0 != 0;
+        let focused = has(ODS_FOCUS) && !has(ODS_NOFOCUSRECT);
+        let disabled = has(ODS_DISABLED);
+        if let Some(c) = Canvas::new(mem, scale) {
+            let (uw, uh) = (w as f32 / scale, h as f32 / scale);
+            let (x, y, bw, bh) = (4.0, 4.0, uw - 8.0, uh - 8.0);
+            c.fill_round_rect(x, y, bw, bh, 6.0, color);
+            if chosen {
+                c.stroke_round_rect(x, y, bw, bh, 6.0, 2.0, palette.text_primary, false);
+                // Check in black or white, whichever stands out on the colour.
+                let luma = 299 * color.r() as u32 + 587 * color.g() as u32 + 114 * color.b() as u32;
+                let mark = if luma > 128_000 {
+                    Color(0x000000)
+                } else {
+                    Color(0xFFFFFF)
+                };
+                glyph::check(&c, x + bw / 2.0 - 8.0, y + bh / 2.0 - 8.0, mark);
+            } else {
+                let border = if disabled {
+                    palette.border_card
+                } else {
+                    palette.border_control
+                };
+                c.stroke_round_rect(x, y, bw, bh, 6.0, 1.0, border, false);
+            }
+            if focused {
+                c.stroke_round_rect(
+                    x - 4.0,
+                    y - 4.0,
+                    bw + 8.0,
+                    bh + 8.0,
+                    9.0,
+                    2.0,
+                    palette.focus_ring,
+                    false,
+                );
+            }
+        }
+        let _ = BitBlt(hdc, r.left, r.top, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old_bmp);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+    }
+}
+
 /// Accessible name of a panel (its window text).
 pub fn accessible_name(kind: &PanelKind, shared: &Shared) -> String {
     match kind {
@@ -1070,10 +1146,20 @@ mod tests {
             status: Status::Ok(State::default()),
             last_battery: None,
             saved: false,
+            saved_dpi: None,
+            saved_light: None,
             applied_color: None,
             original_dpi: None,
             profile: crate::app::Profile::NotRead,
             backup: None,
+            profiles: Vec::new(),
+            active_profile: None,
+            programs: Vec::new(),
+            auto_switch: true,
+            ask_new: true,
+            game: None,
+            game_previous: None,
+            unanswered: Vec::new(),
         }
     }
 

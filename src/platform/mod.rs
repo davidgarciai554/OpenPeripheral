@@ -1,7 +1,10 @@
 //! Operating-system specific code.
 
+pub mod games;
 pub mod hid;
+pub mod libraries;
 pub mod system;
+pub mod toast;
 
 /// Lets CLI output reach the terminal that started this GUI-subsystem binary.
 pub fn attach_console() {

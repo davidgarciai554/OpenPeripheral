@@ -135,6 +135,25 @@ pub fn probe(s: &'static Supported, path: CString, t: &dyn Transport) -> Vec<Hid
 }
 
 impl HidppDevice {
+    /// Effect ids of light zone 0 (0x8070); empty without that feature.
+    /// Only the first zone is used: the G305 declares one.
+    fn light_effects(&mut self, t: &dyn Transport) -> Result<Vec<u16>> {
+        let Some(p) = self.optional(t, Request::LedInfo)? else {
+            return Ok(Vec::new());
+        };
+        if hidpp::parse_led_zone_count(&p).unwrap_or(0) == 0 {
+            return Ok(Vec::new());
+        }
+        let p = self.request(t, Request::LedZoneInfo { zone: 0 })?;
+        let count = hidpp::parse_led_effect_count(&p).ok_or(Error::Protocol("zona de luz"))?;
+        (0..count)
+            .map(|index| {
+                let p = self.request(t, Request::LedEffectInfo { zone: 0, index })?;
+                hidpp::parse_led_effect_id(&p).ok_or(Error::Protocol("efecto de luz"))
+            })
+            .collect()
+    }
+
     /// Reads a whole sector, 16 bytes at a time (the last read is aligned to
     /// the end: reading past it is rejected by the device).
     fn read_sector(&mut self, t: &dyn Transport, sector: u16, size: u16) -> Result<Vec<u8>> {
@@ -169,6 +188,10 @@ impl Device for HidppDevice {
         &self.path
     }
 
+    fn receiver_index(&self) -> Option<u8> {
+        (1..=6).contains(&self.index).then_some(self.index)
+    }
+
     fn read_profile(&mut self, t: &dyn Transport) -> Result<ProfileDump> {
         let p = self.request(t, Request::OnboardInfo)?;
         let info = onboard::parse_info(&p).ok_or(Error::Protocol("información del perfil"))?;
@@ -195,12 +218,18 @@ impl Device for HidppDevice {
         }
         // Factory copies live at 0x01xx (observed: profile 0x0001 -> 0x0101).
         let rom = self.read_sector(t, 0x0100 | (sector & 0x00ff), info.sector_size)?;
+        let dpi = self
+            .optional(t, Request::DpiList { sensor: 0 })?
+            .and_then(|p| hidpp::parse_dpi_list(&p));
+        let effects = self.light_effects(t)?;
         Ok(ProfileDump {
             info,
             sector,
             directory,
             user,
             rom,
+            dpi,
+            effects,
         })
     }
 
@@ -262,6 +291,21 @@ impl Device for HidppDevice {
                     return Err(Error::Unsupported);
                 }
                 self.request(t, Request::SetDpi { sensor: 0, dpi })?;
+            }
+            Change::Light(light) => {
+                let effects = self.light_effects(t)?;
+                let effect_index = effects
+                    .iter()
+                    .position(|&id| id == light.effect_id())
+                    .filter(|_| light.writable())
+                    .ok_or(Error::Unsupported)?;
+                self.request(
+                    t,
+                    Request::SetLight {
+                        effect_index: effect_index as u8,
+                        light,
+                    },
+                )?;
             }
             Change::Color(_) => return Err(Error::Unsupported),
         }
@@ -352,8 +396,18 @@ mod tests {
                     0x2201 => &[5],
                     0x8060 => &[6],
                     0x8100 => &[7],
+                    0x8070 => &[8],
                     _ => &[0],
                 },
+                // 0x8070 replies observed on the G305 (one zone, 4 effects).
+                (8, 0) => &[0x01, 0x00, 0x00, 0x00, 0x14],
+                (8, 1) => &[0x00, 0x00, 0x01, 0x04],
+                (8, 2) => {
+                    let id = [0x00, 0x01, 0x03, 0x0a][req[5] as usize % 4];
+                    memory = vec![0x00, req[5], 0x00, id];
+                    &memory
+                }
+                (8, 3) => &[],
                 (2, 0) => &[4],
                 (2, 1) => b"G305",
                 (4, 0) => &[90, 50, 0],
@@ -385,6 +439,8 @@ mod tests {
         assert_eq!(dump.directory, onboard::samples::directory());
         assert_eq!(dump.rom, onboard::samples::rom_profile());
         assert_eq!(dump.user.len(), 255);
+        assert_eq!(dump.effects, onboard::samples::EFFECTS);
+        assert_eq!(dump.dpi, Some(onboard::samples::dpi_range()));
         // Only 0x8100 functions 0, 4 and 5 (reads) were sent: never 6, 7, 8.
         let sent = t.sent.borrow();
         assert!(
@@ -401,12 +457,15 @@ mod tests {
         let t = g305_with(user.clone());
         let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
         let dump = d.read_profile(&t).unwrap();
-        let image = onboard::apply_buttons(
+        let image = onboard::apply_edits(
             &dump.user,
             dump.sector,
             &dump.directory,
-            dump.info.button_count,
-            &[(4, onboard::Action::Mouse(0x10))],
+            &dump.limits(),
+            &onboard::ProfileEdits {
+                buttons: vec![(4, onboard::Action::Mouse(0x10))],
+                ..Default::default()
+            },
         )
         .unwrap();
         d.write_profile(&t, &image).unwrap();
@@ -430,12 +489,15 @@ mod tests {
         );
         let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
         let dump = d.read_profile(&t).unwrap();
-        let image = onboard::apply_buttons(
+        let image = onboard::apply_edits(
             &dump.user,
             dump.sector,
             &dump.directory,
-            6,
-            &[(4, onboard::Action::Mouse(0x10))],
+            &dump.limits(),
+            &onboard::ProfileEdits {
+                buttons: vec![(4, onboard::Action::Mouse(0x10))],
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(
@@ -463,6 +525,42 @@ mod tests {
         assert_eq!(s.dpi.unwrap().current, 1600);
         assert_eq!(s.report_rate.unwrap().supported_ms, vec![1, 2, 4, 8]);
         assert!(!s.color);
+    }
+
+    #[test]
+    fn live_light_uses_the_effect_position_and_never_the_profile() {
+        use crate::protocol::onboard::Light;
+        let t = g305();
+        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let before = t.sent.borrow().len();
+        let light = Light::Breathing {
+            color: crate::protocol::razer::Rgb {
+                r: 0xff,
+                g: 0,
+                b: 0,
+            },
+            period_ms: 2000,
+        };
+        assert_eq!(d.apply(&t, Change::Light(light)), Ok(()));
+        // Breathing (0x0A) is the 4th declared effect: index 3, as in H2.
+        let sent = t.sent.borrow();
+        let set: Vec<_> = sent[before..]
+            .iter()
+            .filter(|r| r[2] == 8 && r[3] >> 4 == 3)
+            .collect();
+        assert_eq!(set.len(), 1);
+        assert_eq!(&set[0][4..9], &[0x00, 0x03, 0xff, 0x00, 0x00]);
+        assert_eq!(&set[0][9..11], &[0x07, 0xd0]);
+        // No onboard-profile function was used.
+        assert!(sent[before..].iter().all(|r| r[2] != 7));
+        drop(sent);
+        // Speeds outside the closed tables are refused before sending.
+        let before = t.sent.borrow().len();
+        assert_eq!(
+            d.apply(&t, Change::Light(Light::Cycle { period_ms: 5000 })),
+            Err(Error::Unsupported)
+        );
+        assert!(t.sent.borrow()[before..].iter().all(|r| r[3] >> 4 != 3));
     }
 
     #[test]

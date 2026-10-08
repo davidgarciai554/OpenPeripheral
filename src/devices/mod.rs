@@ -201,6 +201,8 @@ pub struct State {
 pub enum Change {
     Dpi(u16),
     Color(Rgb),
+    /// Mouse light (0x8070), not stored in the profile.
+    Light(crate::protocol::onboard::Light),
 }
 
 /// Raw onboard-profile memory read from a mouse (HID++ 0x8100). Kept by the
@@ -214,12 +216,30 @@ pub struct ProfileDump {
     pub user: Vec<u8>,
     /// Factory (ROM) copy of the profile.
     pub rom: Vec<u8>,
+    /// DPI accepted by the sensor (0x2201), read with the profile.
+    pub dpi: Option<crate::protocol::DpiRange>,
+    /// Light effect ids declared by the device (0x8070), zone 0.
+    pub effects: Vec<u16>,
+}
+
+impl ProfileDump {
+    pub fn limits(&self) -> crate::protocol::onboard::Limits<'_> {
+        crate::protocol::onboard::Limits {
+            button_count: self.info.button_count,
+            dpi: self.dpi.as_ref(),
+            effects: &self.effects,
+        }
+    }
 }
 
 pub trait Device: Send {
     fn info(&self) -> &DeviceInfo;
     /// HID path to open for every operation.
     fn path(&self) -> &CString;
+    /// Device index behind a wireless receiver (HID++ 1-6), if any.
+    fn receiver_index(&self) -> Option<u8> {
+        None
+    }
     fn read_state(&mut self, t: &dyn Transport) -> Result<State>;
     fn apply(&mut self, t: &dyn Transport, change: Change) -> Result<()>;
     /// Reads the onboard profile memory. Read only. `Unsupported` when the

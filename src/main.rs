@@ -5,7 +5,9 @@ mod app;
 mod backup;
 mod config;
 mod devices;
+mod games;
 mod platform;
+mod profiles;
 mod protocol;
 mod ui;
 

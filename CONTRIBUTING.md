@@ -10,7 +10,7 @@ Gracias por ayudar. El objetivo es seguir siendo **pequeño, local y seguro**: s
 ## Añadir un dispositivo
 
 1. **Solo comandos documentados o verificados.** Cada constante nueva debe tener su procedencia en `docs/protocolos/<marca>.md`: especificación pública, documentación de terceros o captura propia. No copies código de proyectos GPL o AGPL (OpenRazer, OpenRGB, OpenMouse…). Puedes usarlos para entender el protocolo, pero hay que reimplementar.
-2. **Nada persistente.** Las escrituras deben ser volátiles. Están prohibidos el firmware, DFU y bootloader, la flash y los perfiles integrados.
+2. **Nada persistente, salvo el perfil integrado verificado.** Las escrituras deben ser volátiles. Están prohibidos el firmware, DFU y bootloader y la flash. La única excepción es el perfil integrado de un ratón cuyo formato esté verificado en hardware (hoy, el G305), y solo a través de `ProfileImage` (`src/protocol/onboard.rs`): confirmación del usuario, copia original, relectura y vuelta atrás si falla.
 3. **Códec puro en `src/protocol/`.** Las peticiones se definen como `enum`. No se puede construir un comando que no esté en el enum. Hay que validar longitud, identificador e integridad de cada respuesta, sin indexar a ciegas.
 4. **Controlador en `src/devices/`** que implemente `Device` usando solo `Transport`.
 5. **Entrada en `SUPPORTED`** (`src/devices/mod.rs`) con la página y el uso HID exactos, y la interfaz si hace falta.

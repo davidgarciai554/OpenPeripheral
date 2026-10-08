@@ -10,8 +10,10 @@ mod confirm;
 mod devices_view;
 mod glyph;
 mod icon;
+mod light;
 mod mouse_settings;
 mod panel;
+mod profiles;
 
 use crate::app::{Command, Shared, Worker};
 use crate::platform::system;
@@ -24,8 +26,9 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-    NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
@@ -33,6 +36,11 @@ use windows::core::{PCWSTR, w};
 pub(crate) const WM_APP_TRAY: u32 = WM_APP + 1;
 pub(crate) const WM_APP_UPDATE: u32 = WM_APP + 2;
 pub(crate) const WM_APP_SHOW: u32 = WM_APP + 3;
+/// A button of a toast was clicked (queued in `TOAST_CLICKS`).
+pub(crate) const WM_APP_TOAST: u32 = WM_APP + 4;
+
+/// Toast clicks arrive on a thread-pool thread: they wait here for the UI.
+static TOAST_CLICKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 
 const MAIN_CLASS: PCWSTR = w!("OpenPeripheral.Main");
@@ -42,12 +50,24 @@ const ID_REFRESH: usize = 2;
 const ID_AUTOSTART: usize = 3;
 const ID_EXIT: usize = 4;
 const ID_DEVICE_BASE: usize = 1000;
+/// Tray profile entries: `ID_PROFILE_BASE + device * 8 + profile`.
+const ID_PROFILE_BASE: usize = 2000;
+/// «Editar perfiles…» of each device: `ID_EDIT_PROFILES_BASE + device`.
+const ID_EDIT_PROFILES_BASE: usize = 3000;
+
+/// A profile chosen in the tray menu, until its write ends:
+/// (`Shared::writes` when sent, profile, profile it replaces).
+type TrayUse = (u64, String, String);
 
 pub(crate) struct App {
     pub shared: Arc<Mutex<Shared>>,
     pub tx: Sender<Command>,
     pub view: devices_view::State,
     taskbar_created: u32,
+    tray_use: Option<TrayUse>,
+    /// New games asked and automatic results already shown.
+    asks_seen: u64,
+    autos_seen: u64,
 }
 
 thread_local! {
@@ -110,15 +130,218 @@ fn tray_update(hwnd: HWND, shared: &Shared) {
     unsafe {
         let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
+    // A profile chosen in the tray failed: a balloon of the icon says so
+    // (DESIGN.md «Perfiles en la bandeja»; nothing is shown when it works).
+    let failed = with_app(|a| {
+        let mark = a.tray_use.as_ref()?.0;
+        if shared.writes == mark {
+            return None;
+        }
+        let (_, to, from) = a.tray_use.take()?;
+        let failed = shared.write_result.as_ref().is_some_and(|m| !m.ok);
+        failed.then_some((to, from))
+    })
+    .flatten();
+    if let Some((to, from)) = failed {
+        balloon(
+            hwnd,
+            &format!("No se pudo cambiar a «{to}»"),
+            &format!("El ratón no respondió y sigue con «{from}». Muévelo y vuelve a intentarlo."),
+        );
+    }
+}
+
+/// A balloon notification of the tray icon (no buttons).
+fn balloon(hwnd: HWND, title: &str, body: &str) {
+    let mut nid = tray_data(hwnd);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_WARNING;
+    let copy = |dst: &mut [u16], text: &str| {
+        let w: Vec<u16> = text.encode_utf16().take(dst.len() - 1).collect();
+        dst.fill(0);
+        dst[..w.len()].copy_from_slice(&w);
+    };
+    copy(&mut nid.szInfoTitle, title);
+    copy(&mut nid.szInfo, body);
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+/// New games and failed automatic switches, from the worker.
+fn game_notices(hwnd: HWND, shared: &Shared) {
+    let Some((asks, autos)) = with_app(|a| {
+        let r = (a.asks_seen != shared.asks, a.autos_seen != shared.autos);
+        a.asks_seen = shared.asks;
+        a.autos_seen = shared.autos;
+        r
+    }) else {
+        return;
+    };
+    if let (true, Some((key, exe))) = (asks, &shared.ask) {
+        ask_toast(hwnd, shared, key, exe);
+    }
+    if let (true, Some(m)) = (autos, &shared.auto_result) {
+        if !m.ok {
+            balloon(hwnd, "Cambio de perfil por juego", &m.text);
+        }
+    }
+}
+
+/// «Juego nuevo: PEAK.exe»: a toast with «Configurar… / Ahora no / No
+/// preguntar más». The app's notification name is registered in HKCU the
+/// first time (plan `perfiles-por-juego`, D12). If the toast cannot be
+/// shown, the game still appears in «Juegos detectados sin responder».
+fn ask_toast(hwnd: HWND, shared: &Shared, key: &crate::devices::DeviceKey, exe: &str) {
+    if !crate::platform::toast::registered() && crate::platform::toast::register().is_err() {
+        return;
+    }
+    let mut name = crate::games::display_name(exe);
+    if name.chars().count() > 60 {
+        name = name.chars().take(59).collect::<String>() + "…";
+    }
+    let mouse = shared
+        .devices
+        .iter()
+        .find(|d| &d.info.key == key)
+        .map(|d| profiles::short(&d.info.name))
+        .unwrap_or_else(|| "ratón".into());
+    // Arguments: action|mouse key|path ('|' cannot appear in a path).
+    let arg = |action: &str| format!("{action}|{}|{exe}", key.0);
+    let (configure, later, never) = (arg("configurar"), arg("ahora-no"), arg("no-preguntar"));
+    let main = hwnd.0 as usize;
+    let _ = crate::platform::toast::show(
+        &format!("Juego nuevo: {name}"),
+        &format!("¿Quieres un perfil del {mouse} para cuando lo abras?"),
+        &configure,
+        &[
+            ("Configurar…", configure.as_str()),
+            ("Ahora no", later.as_str()),
+            ("No preguntar más", never.as_str()),
+        ],
+        move |a| {
+            if let Ok(mut c) = TOAST_CLICKS.lock() {
+                c.push(a);
+            }
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(main as *mut _)),
+                    WM_APP_TOAST,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        },
+    );
+}
+
+fn toast_clicked(arg: &str) {
+    let mut parts = arg.splitn(3, '|');
+    let (Some(action), Some(key), Some(exe)) = (parts.next(), parts.next(), parts.next()) else {
+        return;
+    };
+    let key = crate::devices::DeviceKey(key.to_string());
+    match action {
+        "configurar" => {
+            open_mouse_settings(key.clone());
+            let page = with_app(|a| {
+                (
+                    devices_view::hwnd_of(&a.view),
+                    a.view.mouse.as_ref().map(|m| m.key.clone()),
+                )
+            });
+            if let Some((Some(view), Some(k))) = page {
+                if k == key {
+                    mouse_settings::create_profile_for(view, exe.to_string());
+                }
+            }
+        }
+        "no-preguntar" => send(Command::SetProgram(key, exe.to_string(), None)),
+        // «Ahora no»: asked again next time; it stays in the page's list.
+        _ => {}
+    }
+}
+
+/// Opens the settings page of a mouse (tray «Editar perfiles…»). If another
+/// mouse's page is open, it stays: its unsaved changes are never dropped.
+fn open_mouse_settings(key: crate::devices::DeviceKey) {
+    devices_view::open();
+    let Some((Some(view), current)) = with_app(|a| {
+        (
+            devices_view::hwnd_of(&a.view),
+            a.view.mouse.as_ref().map(|m| m.key.clone()),
+        )
+    }) else {
+        return;
+    };
+    if current.is_none() {
+        mouse_settings::enter(view, key);
+    }
+}
+
+/// The profile submenu of a mouse (DESIGN.md «Perfiles en la bandeja").
+unsafe fn profile_submenu(device: usize, m: &profiles::TrayMenu) -> Option<HMENU> {
+    unsafe {
+        let sub = CreatePopupMenu().ok()?;
+        if let Some(reason) = m.blocked {
+            let t = wide(reason);
+            let _ = AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, PCWSTR(t.as_ptr()));
+            let _ = AppendMenuW(sub, MF_SEPARATOR, 0, None);
+        }
+        let first = ID_PROFILE_BASE + device * 8;
+        let flags = if m.blocked.is_some() {
+            MF_STRING | MF_GRAYED
+        } else {
+            MF_STRING
+        };
+        let mut active = None;
+        for (i, (name, is_active)) in m.items.iter().enumerate() {
+            let t = wide(name);
+            let _ = AppendMenuW(sub, flags, first + i, PCWSTR(t.as_ptr()));
+            if *is_active {
+                active = Some(first + i);
+            }
+        }
+        if let Some(a) = active {
+            // Radio bullet on the active profile.
+            let _ = CheckMenuRadioItem(
+                sub,
+                first as u32,
+                (first + m.items.len() - 1) as u32,
+                a as u32,
+                MF_BYCOMMAND.0,
+            );
+        }
+        let _ = AppendMenuW(sub, MF_SEPARATOR, 0, None);
+        let _ = AppendMenuW(
+            sub,
+            MF_STRING,
+            ID_EDIT_PROFILES_BASE + device,
+            w!("&Editar perfiles…"),
+        );
+        Some(sub)
+    }
 }
 
 fn show_menu(hwnd: HWND, x: i32, y: i32) {
     let Some(shared) = snapshot() else { return };
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
+        let ghub = shared.conflicts.contains(&"Logitech G HUB");
         for (i, d) in shared.devices.iter().enumerate() {
             let label = wide(&text::device_line(d).replace('&', "&&"));
             let _ = AppendMenuW(menu, MF_STRING, ID_DEVICE_BASE + i, PCWSTR(label.as_ptr()));
+            if let Some(m) = profiles::tray_menu(d, ghub) {
+                if let Some(sub) = profile_submenu(i, &m) {
+                    let t = wide(&m.title);
+                    let _ = AppendMenuW(
+                        menu,
+                        MF_STRING | MF_POPUP,
+                        sub.0 as usize,
+                        PCWSTR(t.as_ptr()),
+                    );
+                }
+            }
         }
         if shared.devices.is_empty() {
             let label = wide(if shared.scanned {
@@ -161,11 +384,28 @@ fn show_menu(hwnd: HWND, x: i32, y: i32) {
         .0 as usize;
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
-        // Device entries open the view; their settings screen does not
-        // exist yet.
-        match chosen.checked_sub(ID_DEVICE_BASE) {
-            Some(_) => devices_view::open(),
-            None => on_command(chosen),
+        // Device entries open the view.
+        if let Some(i) = chosen.checked_sub(ID_EDIT_PROFILES_BASE) {
+            if let Some(d) = shared.devices.get(i) {
+                open_mouse_settings(d.info.key.clone());
+            }
+        } else if let Some(n) = chosen.checked_sub(ID_PROFILE_BASE) {
+            // Resolved against the snapshot the menu was built from.
+            let (device, profile) = (n / 8, n % 8);
+            if let Some(d) = shared.devices.get(device) {
+                if let Some(p) = d.profiles.get(profile) {
+                    let from = d.active_profile.clone().unwrap_or_default();
+                    with_app(|a| a.tray_use = Some((shared.writes, p.name.clone(), from)));
+                    send(crate::profiles::use_command(
+                        d.info.key.clone(),
+                        p.name.clone(),
+                    ));
+                }
+            }
+        } else if chosen >= ID_DEVICE_BASE {
+            devices_view::open();
+        } else {
+            on_command(chosen);
         }
     }
 }
@@ -203,8 +443,19 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
         WM_APP_UPDATE => {
             if let Some(shared) = snapshot() {
                 tray_update(hwnd, &shared);
+                game_notices(hwnd, &shared);
             }
             devices_view::refresh();
+            LRESULT(0)
+        }
+        WM_APP_TOAST => {
+            let clicks = TOAST_CLICKS
+                .lock()
+                .map(|mut c| std::mem::take(&mut *c))
+                .unwrap_or_default();
+            for c in clicks {
+                toast_clicked(&c);
+            }
             LRESULT(0)
         }
         WM_APP_SHOW => {
@@ -282,7 +533,12 @@ pub fn run() {
                 LPARAM(0),
             );
         });
-        let worker = Worker::new(shared.clone(), notify, system::running_conflicts);
+        let worker = Worker::new(
+            shared.clone(),
+            notify,
+            system::running_conflicts,
+            tx.clone(),
+        );
         let handle = std::thread::Builder::new()
             .name("devices".into())
             .spawn(move || worker.run(rx));
@@ -293,9 +549,15 @@ pub fn run() {
                 tx: tx.clone(),
                 view: devices_view::State::default(),
                 taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+                tray_use: None,
+                asks_seen: 0,
+                autos_seen: 0,
             })
         });
         tray_add(main);
+        // Programs opening and closing (profiles per game); kept for the
+        // life of the message loop.
+        let _hook = crate::platform::games::start(tx.clone());
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

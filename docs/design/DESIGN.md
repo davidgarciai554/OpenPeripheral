@@ -1,6 +1,10 @@
 # Diseño: OpenPeripheral — vista «Dispositivos» y ajustes del ratón
 
-> Estado: aprobado (diseño). La vista «Dispositivos» está implementada. La pantalla «Ajustes del ratón» (aprobada el 2026-10-06) requiere un plan propio aprobado.
+> Estado: aprobado (diseño). La vista «Dispositivos» y la pantalla «Ajustes del ratón» están implementadas, incluida la **revisión del 2026-10-07**: sección «Iluminación», DPI y luz guardados en la memoria del ratón y guardado común de la página (plan `Planes/2026-10-07-luz-y-guardado-raton-v2.md`, que modifica el v1).
+>
+> **Revisión del 2026-10-07 (tarde), aprobada:** perfiles del ratón guardados en el PC, que «Usar» escribe en el ratón; cambio desde la página y desde la bandeja; y perfiles por juego, que cambian solos al abrir y cerrar un juego.
+> - **Perfiles y bandeja: implementados** (plan `Planes/2026-10-07-perfiles-raton.md`; ver «Evidencia» y las desviaciones 9 a 12).
+> - **Perfiles por juego: implementados** (plan `Planes/2026-10-07-perfiles-por-juego.md`; desviaciones 13 a 16). Puertas de hardware HB1–HB4 pendientes.
 >
 > Este documento es la fuente de verdad de diseño de la interfaz de OpenPeripheral. Debe leerse antes de modificarla. **Sustituye** la dirección anterior («controles clásicos de Windows, sin identidad propia»), aprobada en el plan v0.1, que no admitía tema oscuro.
 
@@ -12,10 +16,14 @@
 - **Trabajo principal:** comprobar la batería y el estado, y entrar a los ajustes de un dispositivo.
 - **Incluido:**
   - Vista «Dispositivos» con encabezado, aviso de software en conflicto, rejilla de tarjetas, estados, tema oscuro y claro, y ventana estrecha.
-  - Pantalla **«Ajustes del ratón»**: DPI, botones, tasa de sondeo y restauración. Su estructura (cabecera común y secciones) será la base de teclados, cascos y mandos.
+  - Pantalla **«Ajustes del ratón»**: DPI, iluminación, botones, tasa de sondeo y perfil del ratón. DPI, luz y botones se guardan juntos en la memoria del ratón. Su estructura (cabecera común y secciones) será la base de teclados, cascos y mandos.
+  - **Perfiles del ratón** (revisión del 2026-10-07, tarde): hasta 8 configuraciones con nombre (DPI, luz y botones), guardadas en el PC. Se cambia de perfil desde la página y desde el menú de la bandeja.
+  - **Perfiles por juego:** al abrir un juego detectado se pregunta, con una notificación de Windows, si se quiere un perfil para él. Después, el perfil cambia solo al abrir y cerrar ese juego o programa.
 - **Excluido (por ahora):**
   - Pantallas de ajustes de teclados, cascos y mandos. Su botón «Ajustes» sigue siendo un marcador sin acción (desviación 2).
-  - Macros, perfiles múltiples y el ciclo de DPI del botón DPI.
+  - Macros y el ciclo de DPI del botón DPI.
+  - Atajos de teclado globales para cambiar de perfil, mostrar el perfil en la tarjeta de «Dispositivos», e importar o exportar perfiles.
+  - Cambio automático de perfil con OpenPeripheral cerrado.
   - Navegación lateral.
   - Imágenes de producto.
   - Animaciones.
@@ -40,12 +48,15 @@
 | --- | --- | --- | --- |
 | https://claude.ai/artifact/M4WBLhzC2f7Q8eaHis2Qub (v11) | Tarjetas en tema oscuro y claro, estados, ventana de 420 px | Tarjetas, pila de 5 franjas con color, icono de cable, icono de mando completo | Aprobado el 2026-10-06 |
 | Mismo lienzo (v17): mesas «Ajustes del ratón», «Botones — edición», estados del DPI, estados del guardado de botones y ventana de 420 px | Misma ventana con «← Dispositivos»; DPI con campo, −/+ y valores rápidos; botones guardados en la memoria del ratón | Todo lo de la sección «Pantalla Ajustes del ratón» | Aprobado el 2026-10-06 |
+| Mismo lienzo (v25): fila «Ajustes del ratón — sección Iluminación» (oscuro interactivo, claro, estados y 420 px) | Sección «Iluminación»; DPI y luz guardados en el ratón; «Probar» en lugar de «Aplicar»; barra de pendientes común con un diálogo y una escritura; sección «Perfil del ratón» | Revisión del 2026-10-07 descrita en «Pantalla Ajustes del ratón» | Aprobado el 2026-10-07 |
+| Mismo lienzo (v30): fila «Ajustes del ratón — perfiles» (oscuro interactivo, claro con «Nuevo perfil», estados, 420 px y menú de la bandeja) | Perfiles guardados en el PC; «Usar» los escribe en el ratón sin diálogo; la página edita siempre el perfil activo | Sección «Perfiles» y «Perfiles en la bandeja» | Aprobado el 2026-10-07 |
+| Mismo lienzo (v32): fila «Perfiles por juego» (página con un juego abierto; notificación, diálogo «Perfil para …», cambio automático, errores, «Añadir programa…» y límite) | Pregunta solo por juegos detectados, con una notificación; al cerrar el juego vuelve el perfil anterior | Sección «Juegos y programas» y «Flujo de perfiles por juego» | Aprobado el 2026-10-07 |
 
 El enlace es solo una referencia. Este documento es la fuente de verdad.
 
 ## Dirección de diseño aprobada
 
-- **Idea rectora:** instrumental y sobrio. Negro o claro, tipografía y espacio. El único color con significado es el **nivel de batería** y, como dato, el color que el usuario ha aplicado.
+- **Idea rectora:** instrumental y sobrio. Negro o claro, tipografía y espacio. El único color con significado es el **nivel de batería** y, como dato, el color de luz que el usuario elige o ha aplicado.
 - **Personalidad y tono:** una herramienta discreta y precisa. Textos cortos en español, descriptivos, sin jerga.
 - **Densidad de información:** media. Una tarjeta por dispositivo con 5 bloques: tipo, identidad, energía, capacidades y acción.
 - **Principio de composición:** rejilla de tarjetas centrada con ancho máximo. El orden de lectura es de arriba abajo dentro de cada tarjeta.
@@ -54,7 +65,7 @@ El enlace es solo una referencia. Este documento es la fuente de verdad.
 
 ## Arquitectura e interacción
 
-- **Navegación y orientación:** una sola ventana. «Ajustes» en la tarjeta de un ratón sustituye la vista «Dispositivos» por «Ajustes del ratón», **en la misma ventana**. El botón «‹ Dispositivos» (y Esc) vuelve, con el foco devuelto al «Ajustes» de esa tarjeta. La bandeja del sistema sigue siendo el acceso principal.
+- **Navegación y orientación:** una sola ventana. «Ajustes» en la tarjeta de un ratón sustituye la vista «Dispositivos» por «Ajustes del ratón», **en la misma ventana**. El botón «‹ Dispositivos» (y Esc) vuelve, con el foco devuelto al «Ajustes» de esa tarjeta. La bandeja del sistema sigue siendo el acceso principal, y desde ella también se cambia de perfil (ver «Perfiles en la bandeja»). «Configurar…», en la notificación de un juego nuevo, abre «Ajustes del ratón» con el diálogo «Perfil para <juego>».
 - **Jerarquía de pantallas y contenidos:**
   1. Encabezado: «Dispositivos», contador «N conectados» y el botón «Actualizar».
   2. Aviso de software en conflicto (solo si lo hay).
@@ -79,7 +90,7 @@ El enlace es solo una referencia. Este documento es la fuente de verdad.
    - **Pila de 5 franjas**, el porcentaje (22 px, seminegrita) y el estado de carga («descargando», «cargando», «carga completa»). Con 0–20 % añade «Batería baja» en seminegrita.
    - **Con cable:** icono de enchufe, «Con cable» y «sin batería».
    - **Sin dato:** se omite el bloque.
-4. Capacidades en texto: «1000 DPI · 1000 Hz», o «Color aplicado» con una muestra de 14 px y el valor hex. Es siempre el **último color aplicado por la app**, porque el dispositivo no permite leer el suyo.
+4. Capacidades en texto: «1000 DPI · 1000 Hz», o «Color aplicado» con una muestra de 14 px y el valor hex. En teclados y mandos es siempre el **último color aplicado por la app**, porque el dispositivo no permite leer el suyo. En un ratón con luz se añade la luz guardada en su perfil: «1600 DPI · 1000 Hz · Luz fija ■ #00C8FF» («Luz apagada» o «Luz en ciclo de colores», sin muestra).
 5. Botón «Ajustes», alineado a la derecha, con nombre accesible «Ajustes de <dispositivo>».
 
 ### Pila de batería
@@ -117,17 +128,120 @@ Pictogramas propios de trazo (1,6 px; 1,5 px en pila y cable), monocromos en `te
 - **Orden:**
   1. Botón «‹ Dispositivos».
   2. **Cabecera:** icono de 40 px (32 px en estrecha), nombre (26 px seminegrita; 22 px en estrecha), «Ratón · Conectado · Receptor LIGHTSPEED» y, a la derecha, la pila con el porcentaje y el estado. En estrecha, la pila baja a su propia línea.
-  3. Aviso de software en conflicto (solo si lo hay; p. ej. «Puede sobrescribir el DPI»).
-  4. **Sensibilidad (DPI).**
-  5. **Botones.**
-  6. **Tasa de sondeo.**
-  7. **Restaurar.**
-  8. Nota final en `text.tertiary`: «Los cambios no se guardan en la memoria del ratón: OpenPeripheral los vuelve a aplicar al reconectarlo» (se refiere al DPI; los botones sí se guardan en el ratón y su sección lo dice).
-- **Énfasis de la acción principal** de cada sección («Aplicar», «Guardar en el ratón…», «Reintentar»): borde `text.primary` y texto seminegrita, sin color de acento. Las demás acciones usan el botón con contorno estándar.
+  3. Aviso de software en conflicto (solo si lo hay; p. ej. «Puede sobrescribir el DPI y la luz»).
+  4. Texto en `text.secondary`: «Los ajustes se guardan en la memoria del ratón: funcionan aunque cierres OpenPeripheral y en otros PC. “Probar” lo envía al ratón sin guardarlo».
+  5. **Perfiles** (revisión del 2026-10-07, tarde).
+  6. **Sensibilidad (DPI).**
+  7. **Iluminación** (solo si el ratón declara luz).
+  8. **Botones.**
+  9. **Tasa de sondeo.**
+  10. **Juegos y programas** (revisión del 2026-10-07, tarde).
+  11. **Restaurar** (antes «Perfil del ratón»; se renombra para no confundirla con «Perfiles»).
+  12. **Barra de cambios sin guardar**, fija al pie de la ventana (solo si hay cambios).
+- Con perfiles, el texto del punto 4 pasa a ser: «Cada perfil guarda el DPI, la luz y los botones. «Usar» escribe el perfil en la memoria del ratón, así que funciona aunque cierres OpenPeripheral y en otros PC. «Probar» lo envía al ratón sin guardarlo».
+- **Énfasis de la acción principal** («Guardar en el ratón…», «Guardar en el ratón» en el diálogo, «Reintentar»): borde `text.primary` y texto seminegrita, sin color de acento. «Probar» y las demás acciones usan el botón con contorno estándar.
+- Antes de la revisión del 2026-10-07 el orden era: DPI, Botones, Tasa de sondeo y Restaurar, con la nota final «Los cambios no se guardan en la memoria del ratón: OpenPeripheral los vuelve a aplicar al reconectarlo». Esa nota desaparece.
+
+#### Modelo de guardado (revisión 2026-10-07)
+
+- DPI, luz y botones viven en el **mismo perfil integrado** del ratón. Todos los cambios de la página se acumulan como pendientes y se escriben **juntos, con una sola confirmación y una sola escritura**, verificada releyendo el perfil.
+- **«Probar»** (DPI e iluminación) envía el valor al ratón sin guardarlo, para notarlo o verlo. Lo probado no cuenta como guardado. Al descartar, salir sin guardar o reconectar el ratón, vuelve lo guardado.
+- Cada sección con cambios muestra en su título la etiqueta con contorno «Cambiado · antes: <valor guardado>». Junto a «Probar» aparece «Guardado: <valor>».
+- **Barra de cambios sin guardar:** fija al pie de la ventana, sobre `surface.card` con borde superior `border.control`. Muestra «**N cambios sin guardar.** Todavía no se han escrito en el ratón», con «Descartar» y «Guardar en el ratón…». Si se sale con cambios pendientes, se pregunta si se descartan.
+- **Confirmación:** el diálogo de «Botones» pasa a ser el de toda la página: «¿Guardar N cambios en la memoria del ratón?», con la lista de cambios («DPI al arrancar: 1000 → 1600», «Luz: fija, Cian #00C8FF → respiración, Naranja #FF8000, lenta», «Lateral trasero: Atrás → Ctrl + C»). Mantiene el texto, el foco y los botones.
+- **Guardando, guardado y error:** los estados de «Botones» pasan a la página. La barra muestra «Guardando en el ratón…», luego la marca de verificación con «Guardado en el ratón. Se comprobó la escritura leyendo de nuevo el perfil», o el panel de error, que conserva los cambios.
+- **Bloqueo por G HUB:** con G HUB en ejecución se deshabilitan «Guardar en el ratón…», «Restaurar perfil original…» y «Valores de fábrica…». «Probar» sigue disponible.
+- **Aplicar al conectar (plan v2, decisión del usuario):** la app recuerda en su configuración el DPI y la luz guardados y los envía en vivo, sin escribir en la memoria, al iniciarse o al conectar el ratón. Así se impone aunque otro programa los haya cambiado. «Probar» no se recuerda.
+- **DPI guardado (plan v2, decisión del usuario):** la posición del ciclo con la que arranca el ratón no está en el perfil, así que el DPI guardado se escribe en los **4 niveles** del botón DPI; la confirmación lo dice. «Valores de fábrica…» devuelve el ciclo de fábrica.
+- **«Restaurar originales»** (en «Perfil del ratón») deja de aplicar el DPI y la luz de la app al conectar, vuelve al DPI que tenía el ratón al detectarlo y a la luz de su perfil. No escribe en el ratón.
+- Texto común de la página: «OpenPeripheral aplica tu DPI y tu luz al iniciarse o al conectar el ratón. “Guardar en el ratón…” los conserva también sin la app y en otros PC. “Probar” lo envía al ratón sin guardarlo».
+
+#### Perfiles (revisión 2026-10-07, tarde)
+
+- **Por qué en el PC:** el G305 solo tiene **1 perfil integrado** (`getInfo` de `0x8100`; ver `docs/protocolos/logitech-hidpp.md`). Los perfiles viven en la configuración de la app. Son de cada ratón concreto y no se comparten entre modelos.
+- **Modelo (decisión del usuario):**
+  - Un perfil guarda el DPI al arrancar, la luz y los botones.
+  - **«Usar» escribe el perfil en la memoria del ratón** al momento, **sin diálogo de confirmación**, con la misma escritura verificada por relectura que «Guardar en el ratón».
+  - **La página edita siempre el perfil activo**: lo que se ve es lo que hay en el ratón. Para editar otro perfil, primero se usa. «Guardar en el ratón…» actualiza a la vez el ratón y el perfil activo.
+  - «Restaurar perfil original…» y «Valores de fábrica…» también actualizan el perfil activo.
+  - Se descartó editar un perfil inactivo sin activarlo, porque mezcla dos fuentes de verdad en la misma página.
+- **Título:** «Perfiles», con el contador «N de 8» en `text.tertiary`.
+- **Lista** (`ul` con nombre accesible «Perfiles de este ratón»):
+  - Cada fila lleva radio 8 y relleno de 12×14 px: el nombre (15 px, seminegrita) y el resumen en `text.secondary`, por ejemplo «1600 DPI · Luz respiración rojo #FF0000, lenta · Botones: Lateral trasero → Ctrl + C». Si el perfil tiene programas asociados, añade «Se activa con: Counter-Strike 2, Elden Ring».
+  - **Fila activa:** fondo `surface.selected`, borde `text.primary`, la marca de verificación y «**Activo · en el ratón**» en seminegrita, y el botón «Renombrar…». Nunca se distingue solo por el color.
+  - **Filas inactivas:** «Usar» (énfasis de acción principal) y «Eliminar…». Nombres accesibles: «Usar el perfil Juego» y «Eliminar el perfil Juego».
+  - Se descartó un grupo de opción única, porque las flechas escribirían en el ratón en cada pulsación.
+- **Pie:** «Nuevo perfil…» y el texto «Copia el perfil activo. Hasta 8 perfiles».
+- **Primera vez:** lo que hay en el ratón se convierte en «Perfil 1», activo, con el texto «Crea otro perfil para cambiar rápido entre configuraciones, por ejemplo una para trabajar y otra para jugar».
+- **Diálogos** (mismo patrón modal, con el foco inicial en el primer campo o en «Cancelar»):
+  - **Nuevo perfil:** «Nombre» (prellenado, por ejemplo «Juego 2»; hasta 32 caracteres, único) con la ayuda «Hasta 32 caracteres. No puede repetir el nombre de otro perfil», y el texto «Empieza como una copia de «Juego»: … No se escribe en el ratón hasta que pulses “Usar”». Botones: Cancelar / Crear perfil.
+  - **Renombrar «Trabajo»:** si el nombre está repetido, el campo lleva borde de 2 px y estado inválido, con «**Error:** ya hay un perfil llamado «Juego». Elige otro nombre», y «Renombrar» queda deshabilitado.
+  - **¿Eliminar el perfil «Diseño»?:** «Se borra de este PC. El ratón no cambia, porque «Diseño» no es el perfil activo». Si tiene programas asociados, se añade que pasarán a «No cambiar de perfil». Botones: Cancelar (foco inicial) / Eliminar perfil. El perfil activo no tiene «Eliminar…», y siempre queda al menos uno.
+  - **Cambios sin guardar al pulsar «Usar»:** «“Trabajo” tiene 1 cambio sin guardar», con la lista de cambios y «Antes de cambiar a “Juego”, elige qué hacer con él. Si lo descartas, se pierde». Botones: Cancelar (foco inicial) · Descartar y cambiar · Guardar y cambiar.
+- **Estados:**
+  - **Cambiando:** «Cambiando a «Juego»… No apagues ni desconectes el ratón hasta que termine» (`role=status`). La página entera se bloquea, también «‹ Dispositivos». Tarda uno o dos segundos.
+  - **Éxito:** la marca de verificación y «Perfil «Juego» activo en el ratón. Se comprobó la escritura leyendo de nuevo el perfil». DPI, luz y botones pasan a los del perfil nuevo.
+  - **Error** (panel `role=alert`): «**Error:** no se pudo cambiar a «Juego». El ratón no respondió», y «El ratón sigue con «Trabajo»: la comprobación de la escritura falló y OpenPeripheral volvió a escribir lo que había. Muévelo para despertarlo y vuelve a intentarlo», con «Reintentar».
+  - **G HUB en ejecución:** «Usar» se deshabilita (nombre accesible «…, cierra G HUB para cambiar de perfil»), con el aviso «Cierra G HUB para cambiar de perfil. Puedes crear, renombrar y eliminar perfiles igualmente».
+  - **Desconectado:** «Usar» se deshabilita, con «Conecta o enciende el ratón para cambiar de perfil. Los cambios sin guardar se conservan».
+  - **El ratón no coincide con el perfil activo:** al abrir la página se compara el perfil del ratón con el activo. Si otro programa lo ha cambiado, aparece el aviso «El ratón tiene ajustes distintos de «Trabajo»: DPI al arrancar 3200 (en el perfil: 1000). Puede que otro programa lo haya cambiado», con «Volver a aplicar «Trabajo»» y «Guardar como perfil nuevo…». La fila activa muestra «Activo · el ratón no coincide»: la marca «en el ratón» solo aparece si coinciden.
+  - **Límite:** con 8 perfiles, «Nuevo perfil…» se deshabilita, con «Has llegado a 8 perfiles. Elimina uno para crear otro».
+- **Perfil activado por un juego:** aviso con el pictograma de mando: «**VALORANT está abierto:** se usa el perfil «VALORANT». Al cerrarlo, el ratón vuelve a «Trabajo»». Si se usa otro perfil con el juego abierto, se mantiene hasta que se cierre el juego («Si usas otro perfil con el juego abierto, se mantiene hasta que lo cierres»).
+
+#### Juegos y programas (revisión 2026-10-07, tarde)
+
+- **Descripción:** «Al abrir uno de estos programas, OpenPeripheral escribe su perfil en el ratón. Al cerrarlo, vuelve el perfil que había. Solo funciona con OpenPeripheral abierto».
+- **Casillas nativas:**
+  - «Cambiar de perfil al abrir estos programas».
+  - «Preguntar al detectar un juego nuevo», con la ayuda «Juegos de Steam, Xbox, Epic o GOG. Se pregunta con una notificación de Windows» (sin pantalla completa: desviación 13).
+- **Tabla** (en un contenedor con desplazamiento horizontal si no cabe):
+  - Columna «Programa»: el nombre en seminegrita, «· abierto» si lo está, y el .exe en `text.secondary`.
+  - Columna «Perfil»: un selector nativo con los perfiles y «No cambiar de perfil».
+  - «Quitar», con nombre accesible «Quitar VALORANT».
+  - Nota: «“No cambiar de perfil” es lo que se guarda al responder “No preguntar más”. “Quitar” hace que se vuelva a preguntar la próxima vez».
+- **«Añadir programa…»:** para programas que no se detectan solos («como un editor o el navegador»). Abre un diálogo con:
+  - la lista de programas abiertos (`listbox`, con nombre y .exe);
+  - el selector «Perfil»;
+  - «Buscar archivo…» y Cancelar / Añadir.
+
+#### Flujo de perfiles por juego (revisión 2026-10-07, tarde)
+
+Decisiones del usuario: se pregunta **solo por juegos detectados**, la pregunta se hace con una **notificación de Windows** y al cerrar el juego **vuelve el perfil anterior**.
+
+1. **Juego nuevo:** un programa de las bibliotecas de Steam, Epic, GOG o Xbox sin asociación previa (la pantalla completa se descartó: desviación 13). Aparece la notificación «Juego nuevo: VALORANT. ¿Quieres un perfil del G305 para cuando lo abras?», con tres botones:
+   - **Configurar…**
+   - **Ahora no:** vuelve a preguntar la próxima vez que se abra.
+   - **No preguntar más:** lo guarda como «No cambiar de perfil».
+
+   La notificación no le quita el foco al juego. En modo juego o con «No molestar», espera en el centro de notificaciones. Se pregunta una sola vez por cada apertura del juego.
+2. **«Configurar…»** abre «Ajustes del ratón» con el diálogo «**Perfil para VALORANT**» y el .exe debajo del título. Ofrece un grupo de opción única:
+   - «Crear un perfil nuevo» (elegido por defecto), con el campo «Nombre» prellenado con el nombre del juego y «Empieza como copia de «Trabajo». Después ajusta su DPI, su luz y sus botones en esta página».
+   - «Usar un perfil que ya tengo», con un selector nativo.
+
+   El texto del diálogo dice: «Como VALORANT está abierto, el perfil se escribe en el ratón ahora. Al cerrarlo volverá «Trabajo»». Botones: Cancelar / Crear y usar. Con 8 perfiles, «Crear un perfil nuevo» se deshabilita, con «Has llegado a 8 perfiles. Usa uno que ya tengas o elimina alguno», y queda elegida la otra opción.
+3. **Las siguientes veces:** al abrir el juego se escribe su perfil y al cerrarlo se vuelve a escribir el que había (2 escrituras por partida). Si funciona, no hay aviso: lo indican la página y la información del icono de la bandeja («G305: 90 % · perfil VALORANT (por juego)»). Si hay dos juegos con perfil abiertos, manda el último que se abrió.
+4. **Fallos**, siempre con una notificación de Windows que dice con qué perfil sigue el ratón:
+   - «No se cambió al perfil «VALORANT». G HUB está abierto y podría sobrescribirlo. El ratón sigue con «Trabajo»».
+   - «No se pudo volver a «Trabajo». El ratón no respondió y sigue con «VALORANT». Muévelo: OpenPeripheral lo intentará de nuevo al detectarlo».
+   - Con el ratón desconectado no se avisa: el perfil se escribe en cuanto vuelva, si el juego sigue abierto.
+
+#### Perfiles en la bandeja (revisión 2026-10-07, tarde)
+
+- **Submenú nativo** debajo de la línea de cada ratón: «Perfil de G305: **Trabajo** ›». Solo aparece si el ratón tiene al menos 2 perfiles.
+  - Dentro, los perfiles como elementos de opción única, con la marca en el activo, un separador y «Editar perfiles…», que abre «Ajustes del ratón».
+  - Elegir un perfil lo escribe en el ratón al momento.
+- **Bloqueado** (con G HUB abierto o el ratón desconectado): la primera línea, en gris, da el motivo («Cierra G HUB para cambiar de perfil» o «Conecta o enciende el ratón para cambiar de perfil»), y los perfiles aparecen en gris. «Editar perfiles…» sigue activo.
+- **Resultado:** si el cambio falla, una notificación de Windows («No se pudo cambiar a «Juego». El ratón no respondió y sigue con «Trabajo». Muévelo y vuelve a intentarlo»), que se queda en el centro de notificaciones. Si funciona, no hay aviso: la información del icono añade «· perfil Trabajo».
+- El menú es el nativo de Windows. Las mesas solo lo dibujan para mostrar su contenido.
 
 #### Sensibilidad (DPI)
 
-- Título, y una descripción con el rango leído del ratón: «Admite de 200 a 12000, en pasos de 50».
+- Título, y una descripción con el rango leído del ratón: «DPI con el que arranca el ratón. Admite de 200 a 12000, en pasos de 50. El botón DPI sigue recorriendo el resto del ciclo del perfil».
+- **Revisión 2026-10-07:**
+  - El valor se guarda en el perfil como **DPI al arrancar**; el resto del ciclo del botón DPI no cambia.
+  - Donde esta sección dice «Aplicar», ahora es **«Probar»** (botón estándar), y «Actual: N DPI» pasa a «Guardado: N DPI».
+  - Los estados de aplicar se leen como estados de probar: «Probando 1600 DPI en el ratón. Guárdalo para que se mantenga al apagarlo».
+  - El cambio se guarda desde la barra común.
 - **Nuevo valor:** etiqueta, botón «−», campo numérico (96 px; ocupa el ancho en estrecha) y botón «+». Los botones suman o restan un paso (50) y se deshabilitan en el mínimo o el máximo, con nombre accesible «Subir 50 DPI (máximo alcanzado)». El campo tiene fondo `bg.app` y borde `border.control`.
 - **Aplicar** al lado del campo y **«Actual: N DPI»** en texto. El DPI **solo se envía al pulsar «Aplicar»** (o Enter en el campo).
 - **Valores rápidos:** 400 · 800 · 1600 · 3200 (solo los que estén dentro del rango del ratón). Rellenan el campo, no aplican. El elegido se marca con fondo `surface.selected`, borde `text.primary`, seminegrita y estado presionado, nunca solo con color. En estrecha se muestran en una rejilla de 4.
@@ -138,9 +252,31 @@ Pictogramas propios de trazo (1,6 px; 1,5 px en pila y cable), monocromos en `te
   - Valor no válido: icono de error y «**Error:** 1625 no es válido. Usa un valor de 200 a 12000 en pasos de 50 (por ejemplo, 1600 o 1650)». El campo lleva borde de 2 px y estado inválido, y el foco vuelve a él.
   - Sin respuesta: «**Error:** el ratón no respondió; sigue en 1000 DPI. Muévelo para despertarlo y vuelve a intentarlo», con «Reintentar».
 
+#### Iluminación (revisión 2026-10-07)
+
+- Solo aparece si el ratón declara luz (HID++ `0x8070`), y solo ofrece los efectos que el ratón declara. Descripción: «Una zona de luz. Este ratón admite: apagada, fija, ciclo de colores y respiración».
+- **Efecto:** grupo de opción única (`radiogroup`) con botones de 36 px: Apagada · Fija · Ciclo de colores · Respiración. El elegido usa el estilo del valor rápido elegido: fondo `surface.selected`, borde `text.primary`, seminegrita y estado marcado.
+- **Color** (solo con Fija y Respiración):
+  - Muestras de 32 px (44 px en estrecha), con radio 6 y borde `border.control`. La elegida lleva el anillo de 2 px `text.primary` separado 2 px y el estado presionado. Nombre accesible: «Cian, #00C8FF».
+  - Muestras iniciales: Blanco #FFFFFF, Rojo #FF0000, Naranja #FF8000, Amarillo #FFD000, Verde #00FF40, Cian #00C8FF, Azul #0040FF y Morado #A000FF. **Son una lista de datos ampliable:** la fila se ajusta al ancho, así que añadir muestras no cambia la composición.
+  - Campo «Hex» (112 px; ocupa el ancho en estrecha) con fondo `bg.app`. Admite «#RRGGBB» o «RRGGBB». A su lado, una vista previa de 36 px y el texto «Cian · #00C8FF» o «Personalizado · #12AB34». El color nunca se identifica solo por la muestra.
+- **Velocidad** (solo con Ciclo y Respiración): grupo de opción única Lenta · Media · Rápida. También es una lista ampliable; los periodos concretos se fijan en el plan, dentro de lo que admita el ratón.
+- **Textos fijos:**
+  - Apagada: «Con la luz apagada no hay color ni velocidad que elegir».
+  - Ciclo: «El ciclo recorre todos los colores; solo se elige la velocidad».
+- Pie de la sección: «Probar» y «Guardado: Fija, Cian #00C8FF».
+- **Estados:**
+  - Sin cambios: sin línea de estado.
+  - Cambiado: «Pulsa “Probar” para verlo en el ratón, o guárdalo directamente».
+  - Probando: «Enviando la luz … al ratón para probarla…», con los controles deshabilitados; después, «Probando en el ratón: …. Guárdalo para que se mantenga al apagarlo».
+  - Color no válido: el campo lleva borde de 2 px y estado inválido, con «**Error:** «#00C8F» no es un color válido. Escribe 6 cifras hexadecimales, por ejemplo #00C8FF». La vista previa queda vacía, con borde discontinuo y «Sin vista previa». No se puede probar ni guardar.
+  - Sin respuesta: «**Error:** el ratón no respondió; la luz del ratón no ha cambiado. Muévelo para despertarlo y vuelve a intentarlo», con «Reintentar».
+  - Ratón con luz no verificada: borde discontinuo y «Este ratón todavía no permite cambiar su luz desde OpenPeripheral». Si el ratón no declara luz, la sección no se muestra.
+  - Desconectado: controles deshabilitados y «Conecta o enciende el ratón para cambiar sus ajustes. Los cambios sin guardar se conservan».
+
 #### Botones
 
-- Descripción: «Se guardan en la memoria del ratón: funcionan aunque cierres OpenPeripheral y en otros PC».
+- Descripción (antes de la revisión): «Se guardan en la memoria del ratón: funcionan aunque cierres OpenPeripheral y en otros PC». Con la revisión, esta frase pasa al texto común de la página.
 - **Tabla** de botones: nombre (Izquierdo, Derecho, Central (rueda), Lateral trasero, Lateral delantero, Botón DPI), acción actual y «Cambiar». La lista sale del perfil del ratón; el G305 declara 6 botones.
   - **Izquierdo:** «No se cambia», sin botón. Nunca se puede reasignar ni desactivar.
   - **Botón DPI:** muestra «Ciclo de DPI del perfil» mientras no se conozca su ciclo real.
@@ -153,7 +289,7 @@ Pictogramas propios de trazo (1,6 px; 1,5 px en pila y cable), monocromos en `te
   - Con **«Atajo de teclado…»** aparece un campo de captura (de solo lectura, que muestra «Ctrl + C») con «Borrar». Ayuda: «Con el campo seleccionado, pulsa la combinación. Tab y Esc no se capturan: sirven para salir del campo».
   - «Aceptar» y «Cancelar» cierran la edición de la fila.
 - **Cambio pendiente:** la fila muestra la acción nueva en seminegrita y la etiqueta con contorno «Cambiado · antes: Adelante».
-- **Barra de pendientes**, al pie de la sección y solo si hay cambios: «**N cambios sin guardar.** Todavía no se han escrito en el ratón», con «Descartar» y «Guardar en el ratón…». Al salir con cambios pendientes se pregunta si se descartan.
+- **Barra de pendientes.** Con la revisión del 2026-10-07 pasa a ser la barra común de la página, fija al pie de la ventana (ver «Modelo de guardado»). Antes estaba al pie de la sección y aparecía solo si había cambios: «**N cambios sin guardar.** Todavía no se han escrito en el ratón», con «Descartar» y «Guardar en el ratón…». Al salir con cambios pendientes se pregunta si se descartan.
 - **Confirmación** (diálogo modal sobre `overlay.scrim`):
   - Título «¿Guardar N cambios en la memoria del ratón?», con la lista de cambios.
   - Texto: «El ratón los conservará aunque cierres OpenPeripheral o lo uses en otro PC. Si la comprobación de la escritura falla, OpenPeripheral deja el perfil como estaba» (desviación 5).
@@ -163,17 +299,20 @@ Pictogramas propios de trazo (1,6 px; 1,5 px en pila y cable), monocromos en `te
 - **Error:** panel de alerta con «**Error:** no se pudieron guardar los botones», la causa, «Tus cambios siguen pendientes en esta pantalla», y los botones «Reintentar» y «Restaurar perfil original…».
 - **Copia y restauración:** «Copia del perfil original guardada en este PC el <fecha>» y «Restaurar perfil original…», con su propia confirmación («Se escribirá en el ratón la copia guardada el <fecha>. Se perderán los botones que hayas cambiado»; Cancelar / Restaurar).
 - **Valores de fábrica…** (añadido por decisión del usuario en el plan): copia los botones del perfil de fábrica del ratón al perfil de usuario y deja el resto igual. Tiene su propia confirmación («¿Volver a los botones de fábrica?»; Cancelar / Restaurar botones de fábrica).
+- **Revisión 2026-10-07 (decisión del usuario):** «Restaurar perfil original…» y «Valores de fábrica…» pasan a la sección «Perfil del ratón» y restauran a la vez el **DPI al arrancar, la luz y los botones**. Textos de la confirmación de fábrica: «¿Volver a los valores de fábrica?» y «Se escribirán en el ratón el DPI, la luz y los botones de fábrica»; Cancelar / Restaurar valores de fábrica.
 - **Bloqueo por G HUB** (decisión del usuario): con G HUB en ejecución, «Guardar en el ratón…», «Restaurar perfil original…» y «Valores de fábrica…» se deshabilitan y aparece «Cierra G HUB para guardar los botones». El servicio `lghub_updater` no cuenta.
 - **Ratón no compatible**, o protocolo no verificado: borde discontinuo y «Este ratón todavía no permite cambiar sus botones desde OpenPeripheral». No se muestra ningún control que no funcione.
 
 #### Tasa de sondeo y Restaurar
 
 - **Tasa de sondeo:** «1000 Hz · solo lectura» y «No se puede cambiar mientras el ratón usa sus perfiles integrados».
-- **Restaurar:** «Vuelve al DPI que tenía el ratón al detectarlo (N) y olvida los ajustes guardados» y «Restaurar originales» (sin confirmación: es volátil y no toca los botones).
+- **Restaurar** (sustituida en la revisión del 2026-10-07): «Vuelve al DPI que tenía el ratón al detectarlo (N) y olvida los ajustes guardados» y «Restaurar originales». Con el DPI guardado en el ratón deja de tener sentido y la sustituye:
+- **Perfil del ratón:** «Copia del perfil original guardada en este PC el <fecha>. Incluye el DPI, la luz y los botones», con «Restaurar perfil original…» y «Valores de fábrica…», cada uno con su confirmación.
+- **Revisión del 2026-10-07 (tarde):** la sección pasa a llamarse **«Restaurar»**, con el texto «Copia del perfil original del ratón guardada en este PC el <fecha>. Lo que restaures se guarda en el perfil activo, «<perfil>»».
 
 #### Ratón desconectado con la pantalla abierta
 
-La cabecera pasa a «Desconectado» en `text.tertiary` y todos los controles se deshabilitan. Aparece el texto «Conecta o enciende el ratón para cambiar sus ajustes. Los controles se activarán solos cuando vuelva». No se cierra la pantalla, y los cambios de botones sin guardar se conservan.
+La cabecera pasa a «Desconectado» en `text.tertiary` y todos los controles se deshabilitan. Aparece el texto «Conecta o enciende el ratón para cambiar sus ajustes. Los controles se activarán solos cuando vuelva». No se cierra la pantalla, y los cambios sin guardar (DPI, luz y botones) se conservan.
 
 ## Sistema visual
 
@@ -185,7 +324,7 @@ La cabecera pasa a «Desconectado» en `text.tertiary` y todos los controles se 
   - `text.secondary` para metadatos.
   - `text.tertiary` para etiquetas de sección y desconectados.
 - **Acción y énfasis:** sin color de acento. Los botones llevan contorno `border.control` y texto `text.primary`. El énfasis se marca con peso tipográfico.
-- **Estados semánticos:** solo la pila usa color (`battery.*`). Los avisos y errores son monocromos, con icono y texto («Error: …»).
+- **Estados semánticos:** solo la pila usa color (`battery.*`). Los avisos y errores son monocromos, con icono y texto («Error: …»). Las muestras de luz son datos del usuario, no estados.
 - **Contraste objetivo:** texto ≥ 4,5:1 y gráficos con significado ≥ 3:1, medidos con la fórmula WCAG 2.x el 2026-10-06:
 
   | Par | Oscuro | Claro |
@@ -255,7 +394,9 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 | `surface.selected` | `#26262A` | `#E1E1E5` | Valor rápido elegido; fila de botón en edición |
 | `overlay.scrim` | `#000000` al 55 % | `#000000` al 55 % | Fondo tras un diálogo modal |
 
-- **Valores locales excepcionales y motivo:** la muestra del color aplicado usa el color del dispositivo. Es un dato, no un token.
+- **Valores locales excepcionales y motivo:** la muestra del color aplicado usa el color del dispositivo. Es un dato, no un token. Lo mismo vale para las muestras y la vista previa de «Iluminación»: sus colores salen de la lista de muestras o del campo hex.
+- **Revisión 2026-10-07 (tarde, perfiles):** no añade tokens. La fila activa reutiliza `surface.selected` y el borde `text.primary`, y los avisos reutilizan `border.notice` y `text.notice`. Las notificaciones y el menú de la bandeja son nativos de Windows y toman sus colores del sistema.
+- **Revisión 2026-10-07:** no añade tokens. Al contraste de las muestras no se le exige mínimo, porque el color siempre va acompañado de su nombre y su valor escritos, y su borde `border.control` no porta identidad.
 - **Fuera de la exploración visual:** `text.tertiary` y `surface.card-disconnected` en claro no se dibujaron, pero su contraste está medido (4,81:1 sobre fondo y 5,07:1 sobre tarjeta desconectada). La tarjeta desconectada se distingue del fondo por su borde y su texto, no por el relleno (1,05:1).
 
 ## Componentes mínimos y estados
@@ -267,11 +408,23 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
   - Campo numérico con −/+.
   - Grupo de valores rápidos con estado presionado.
   - Tabla de botones con fila editable.
+  - Grupo de opción única (efecto y velocidad) y grupo de muestras de color con estado presionado.
+  - Campo hex con vista previa.
+  - Etiqueta «Cambiado · antes: …» en el título de sección.
   - Selector nativo de acción.
   - Campo de captura de atajo.
-  - Barra de pendientes.
+  - Barra de pendientes común, fija al pie.
   - Diálogo de confirmación modal.
   - Línea de estado por sección.
+  - **Perfiles (revisión 2026-10-07, tarde):**
+    - Lista de perfiles con fila activa y acciones por fila.
+    - Diálogos «Nuevo perfil», «Renombrar», «Eliminar», «Cambios sin guardar» (con tres botones) y «Perfil para <juego>».
+    - Aviso de perfil activado por un juego y aviso de ratón que no coincide.
+    - Casillas nativas.
+    - Tabla de programas con selector nativo.
+    - Diálogo «Añadir programa» con `listbox`.
+    - Submenú de la bandeja.
+    - Notificaciones de Windows con botones.
 - **Inventario necesario (vista):**
   - Encabezado.
   - Aviso (información y error).
@@ -293,7 +446,12 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 | Tarjeta | Ver orden fijo | — | — | «Sin respuesta» con el último valor y la pila `stale` | — | Desconectado: superficie y texto atenuados, «Ajustes» deshabilitado con su motivo en el nombre accesible | Nombre en 2 líneas con «…»; texto largo en varias líneas, sin cortar valores |
 | Pila | Franjas y porcentaje | — | Sin dato: bloque omitido | Error de batería en texto | Carga completa: 5 franjas | — | — |
 | Sección DPI | Valor actual, campo y valores rápidos | «Aplicando…», controles deshabilitados | — | Valor no válido (estado inválido, foco al campo) o sin respuesta («Reintentar») | Verificación y «aplicado y guardado» | Desconectado o en el límite (−/+) | El foco recorre −, campo, +, Aplicar y los valores rápidos |
+| Sección Iluminación | Efecto; color o velocidad según el efecto; «Probar» y «Guardado: …» | «Enviando … para probarla», controles deshabilitados | Sin luz declarada: sección oculta | Color no válido (estado inválido, sin vista previa) o sin respuesta («Reintentar») | «Probando en el ratón: …» | Desconectado; luz no verificada (borde discontinuo, sin controles) | El foco recorre efectos, muestras, campo hex, velocidad y «Probar»; las muestras pasan a varias filas |
+| Barra de pendientes | «N cambios sin guardar» con «Descartar» y «Guardar en el ratón…» | «Guardando en el ratón…», página bloqueada | Oculta si no hay cambios | Panel de error; los cambios se conservan | «Guardado en el ratón. Se comprobó la escritura…» | «Guardar» deshabilitado con G HUB en ejecución | Siempre visible al pie, aunque se desplace la página |
 | Sección Botones | Tabla con «Cambiar» | «Guardando en el ratón…», sección bloqueada | Ratón no compatible (sin controles) | Panel de error con «Reintentar» y «Restaurar perfil original…»; los cambios se conservan | «Botones guardados… comprobado» | Desconectado; Izquierdo «No se cambia» | Fila en edición resaltada; marca «Cambiado · antes: …» |
+| Sección Perfiles | Lista con la fila activa marcada («Activo · en el ratón»), «Usar», «Eliminar…», «Renombrar…» y «Nuevo perfil…» | «Cambiando a «…»…», página bloqueada | Primera vez: solo «Perfil 1» y una invitación a crear otro | Panel de error, el ratón sigue con el perfil anterior y «Reintentar»; aviso «el ratón no coincide» con «Volver a aplicar» | «Perfil «…» activo en el ratón. Se comprobó…» | «Usar» con G HUB abierto o desconectado; «Nuevo perfil…» con 8 perfiles | Tab recorre los botones de cada fila en orden; los nombres largos pasan a varias líneas |
+| Sección Juegos y programas | Casillas, tabla de programas y «Añadir programa…» | — | Tabla vacía: «Todavía no hay programas. Se añadirán al responder a la notificación de un juego nuevo, o con “Añadir programa…”» | — | — | Tabla deshabilitada con la primera casilla desmarcada | La tabla se desplaza en horizontal dentro de su contenedor |
+| Notificación de juego nuevo y de fallo | Título, texto y botones | — | — | Fallo: dice con qué perfil sigue el ratón | Sin aviso de éxito | — | Accesible como notificación de Windows; no le quita el foco al juego |
 | Diálogo de confirmación | Lista de cambios y consecuencia | — | — | — | — | — | Foco inicial en «Cancelar»; Esc cancela; foco atrapado dentro mientras está abierto; al cerrar vuelve al disparador |
 | Botón | Contorno y texto | — | — | — | — | `text.disabled`, sin puntero | Anillo `focus.ring` de 2 px separado 2 px; activo con fondo `surface` un tono más claro |
 
@@ -308,8 +466,9 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 - **Amplio:** contenido centrado con 1080 px como máximo; no se estira.
 - **Teclado y foco:**
   - **Vista:** Tab recorre «Actualizar» y luego el «Ajustes» de cada tarjeta en orden de lectura. El foco siempre es visible. Esc cierra la ventana.
-  - **Ajustes del ratón:** orden «‹ Dispositivos», −, campo DPI, +, Aplicar, valores rápidos, los «Cambiar» de cada botón, barra de pendientes, «Restaurar perfil original…» y «Restaurar originales». Enter en el campo aplica el DPI. Esc vuelve a la vista, salvo si hay un diálogo, que se cierra primero, o una fila en edición, que se cancela primero. Con cambios de botones pendientes, salir pide confirmar el descarte.
-  - **Diálogos:** el foco queda atrapado dentro, empieza en «Cancelar» y al cerrar vuelve al botón que lo abrió.
+  - **Ajustes del ratón:** orden «‹ Dispositivos», −, campo DPI, +, Probar, valores rápidos, efecto, muestras, campo hex, velocidad, «Probar» de la luz, los «Cambiar» de cada botón, «Restaurar perfil original…», «Valores de fábrica…» y la barra de pendientes. Las flechas mueven la selección dentro de los grupos de opción única. Antes de la revisión del 2026-10-07, el orden terminaba en «Restaurar originales». Enter en el campo aplica el DPI. Esc vuelve a la vista, salvo si hay un diálogo, que se cierra primero, o una fila en edición, que se cancela primero. Con cambios de botones pendientes, salir pide confirmar el descarte.
+  - **Perfiles (revisión 2026-10-07, tarde):** la sección «Perfiles» va justo después de «‹ Dispositivos». Por cada fila, «Usar» y «Eliminar…» (o «Renombrar…» en la activa), y luego «Nuevo perfil…». «Juegos y programas» va antes de «Restaurar»: las dos casillas y, por cada programa, su selector «Perfil» y «Quitar», y luego «Añadir programa…». Ninguna tecla de flecha escribe en el ratón. Mientras se cambia de perfil, Esc no sale de la página.
+  - **Diálogos:** el foco queda atrapado dentro, empieza en «Cancelar» y al cerrar vuelve al botón que lo abrió. En los diálogos con un campo de nombre, el foco empieza en el campo.
   - **Captura de atajo:** Tab y Esc nunca se capturan.
 - **Semántica y mensajes:**
   - Cada tarjeta es una región con el nombre del dispositivo.
@@ -338,9 +497,45 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
   - Tasa de sondeo en solo lectura, con explicación.
   - Mapeo de botones guardado **en la memoria del ratón** (opción B), con clics y navegación, multimedia, atajo de teclado y desactivar.
 
+- **Iluminación y guardado (2026-10-07):**
+  - La luz del ratón se puede editar: es RGB y admite cualquier color (el usuario lo comprobó con OpenMouse).
+  - La luz **y el DPI** se guardan en la memoria del ratón.
+  - Las 8 muestras y las 3 velocidades valen para empezar, pero el diseño debe permitir añadir más.
+  - Aprobado: barra común con una confirmación y una escritura, «Probar» en lugar de «Aplicar», y «Valores de fábrica…» también para el DPI y la luz.
+
+- **Perfiles y perfiles por juego (2026-10-07, tarde):**
+  - Petición: «crear perfiles con distintas configuraciones para poder cambiar rápidamente». Después: al abrir un juego nuevo con OpenPeripheral abierto, preguntar «Programa nuevo, ¿quieres configurar el perfil?» y poder crear un perfil que se active cada vez que se abra ese juego o programa.
+  - Elegido por el usuario:
+    - Al cambiar de perfil se escribe en el ratón, incluidos los botones, sin diálogo.
+    - Se cambia desde la página y desde la bandeja. Sin atajo global ni perfil en la tarjeta.
+    - Se pregunta solo por juegos detectados, mediante una notificación de Windows.
+    - Al cerrar el juego vuelve el perfil anterior.
+  - Aprobado con la exploración (v30 y v32), a propuesta del diseño:
+    - la página edita siempre el perfil activo;
+    - sin aviso cuando el cambio funciona;
+    - hasta 8 perfiles y nombres de hasta 32 caracteres;
+    - «Perfil del ratón» pasa a llamarse «Restaurar»;
+    - submenú de la bandeja solo con 2 perfiles o más;
+    - un cambio manual con el juego abierto dura hasta cerrarlo;
+    - si hay varios juegos abiertos, manda el último que se abrió;
+    - al eliminar un perfil, sus programas pasan a «No cambiar de perfil».
+
 ### Supuestos y pendientes
 
+- **Iluminación del G305 (lectura propia, 2026-10-07):** HID++ `0x8070` ColorLedEffects v6, en el índice 6. Declara 1 zona (ubicación `0x0001`) y 4 efectos con identificadores `0x0000`, `0x0001`, `0x0003` y `0x000A`. Por la documentación pública **se infiere** que son apagada, fija, ciclo y respiración; falta comprobarlo en el ratón.
+- **Por verificar en el plan:**
+  - Dónde están el DPI al arrancar y la luz dentro del sector del perfil. Hipótesis: la luz ocupa los bytes `0xD0–0xE5`, que hoy se conservan sin interpretar.
+  - Si «Probar» la luz funciona en modo de perfiles integrados. Si no, se omite el «Probar» de la luz y la luz solo cambia al guardar.
+  - El periodo de cada velocidad.
+
 - **Viabilidad del mapeo de botones: resuelta el 2026-10-07.** El perfil integrado del G305 (HID++ 0x8100) se ha leído, copiado, escrito, verificado y restaurado. Hubo una reescritura idéntica y un cambio real de un botón lateral, comprobado por el usuario, con vuelta a la copia verificada byte a byte. Cada escritura se hizo con su permiso expreso. Detalles en `docs/protocolos/logitech-hidpp.md`.
+- **Perfiles por juego: por resolver en el plan (no son decisiones de diseño):**
+  - **Cómo detectar juegos:** leer las bibliotecas de Steam, Epic, GOG y Xbox, y detectar la pantalla completa. Habrá falsos positivos (un vídeo a pantalla completa) y falsos negativos; «Añadir programa…» cubre estos últimos.
+  - **Cómo detectar la apertura y el cierre de procesos** con un consumo casi nulo, para mantener los umbrales de recursos.
+  - **Notificaciones con botones:** necesitan que la app se registre ante Windows (AUMID y acceso directo) y que sus respuestas vuelvan a la app.
+  - **Escrituras en la memoria del ratón:** 2 por partida. Falta comprobar que es aceptable para la memoria del ratón y si conviene no escribir cuando el perfil ya coincide con el del ratón.
+  - **«Aplicar al conectar»:** la app envía al ratón el DPI y la luz recordados al iniciarse o al conectarlo. Con perfiles, deben salir del perfil activo, o del perfil del juego si hay uno abierto.
+  - **Privacidad:** se vigila qué programas se abren. Solo se guardan en el PC el nombre y la ruta del .exe de los programas asociados, y nada sale del PC.
 - Los valores rápidos 400, 800, 1600 y 3200 son una propuesta. Solo se muestran los que estén dentro del rango del ratón.
 
 - El enlace «Ver dispositivos compatibles» apunta provisionalmente a la tabla del README, hasta que exista la URL pública del repositorio.
@@ -350,9 +545,9 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 
 ### Aprobación
 
-- **Fecha:** 2026-10-06 (vista «Dispositivos») y 2026-10-06 (ajustes del ratón, «incorpóralo»).
+- **Fecha:** 2026-10-06 (vista «Dispositivos»), 2026-10-06 (ajustes del ratón, «incorpóralo»), 2026-10-07 (iluminación, DPI guardado y barra común: «si») y 2026-10-07 (perfiles y perfiles por juego: «aprobado»).
 - **Persona que aprueba:** el usuario del proyecto, en la sesión de diseño.
-- **Alcance de la aprobación:** diseño. No incluye planificación ni implementación de los ajustes del ratón.
+- **Alcance de la aprobación:** diseño. No incluye planificación ni implementación. La revisión del 2026-10-07 necesita su propio plan aprobado, y cada escritura de prueba en el ratón necesita el permiso expreso del usuario en ese momento.
 - **Observaciones:** el mapeo de botones queda condicionado a la verificación técnica descrita en «Supuestos y pendientes».
 
 ## Validación prevista para la implementación
@@ -370,10 +565,26 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 - **Capturas o revisión visual:** capturas de la app en ejecución en ambos temas, comparadas con este documento y con la exploración.
 - **Ajustes del ratón:**
   - Aplicar, rechazar y restaurar el DPI con el G305 real.
+  - Revisión 2026-10-07:
+    - Probar y guardar el DPI al arrancar y la luz (los cuatro efectos y un color personalizado), y comprobar el efecto físico tras apagar y encender el ratón.
+    - Guardado conjunto con botones, y descartar.
+    - «Valores de fábrica…» y «Restaurar perfil original…», con relectura byte a byte.
+    - Barra fija visible al desplazar la página.
+    - Árbol UIA de los grupos de opción única y de las muestras.
   - Desconectar con la pantalla abierta.
   - Recorrido de teclado completo, incluidos diálogo y captura de atajo.
   - Árbol UIA con el estado presionado de los valores rápidos y el estado inválido del campo.
   - Para los botones: lectura, copia y restauración verificadas antes de cualquier escritura, y una escritura y restauración reales con el permiso expreso del usuario.
+- **Perfiles (revisión 2026-10-07, tarde):**
+  - Crear, renombrar, eliminar y usar perfiles con el G305 real, comprobando DPI, luz y botones tras apagar y encender el ratón.
+  - «Usar» con cambios pendientes (los tres botones del diálogo).
+  - Error al cambiar, G HUB abierto, ratón desconectado y ratón que no coincide.
+  - Submenú de la bandeja.
+  - Juego nuevo: notificación, «Configurar…», «Ahora no» y «No preguntar más». Al abrir y cerrar un juego asociado, el perfil cambia y vuelve el anterior.
+  - Dos juegos abiertos y un cambio manual durante la partida.
+  - «Añadir programa…».
+  - Consumo con la vigilancia de procesos activa.
+  - Árbol UIA de la lista, la tabla y los diálogos.
 - **Recursos:** mantener los umbrales del plan v0.1 (working set ≤ 15 MB en reposo y CPU ≈ 0 %). Si se superan, hay que justificarlo.
 
 ## Evidencia de revisión en ejecución
@@ -391,6 +602,18 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 | 2026-10-07 | Puerta de escritura | G305 real, G HUB cerrado, batería 90 % | Relecturas de solo lectura de los sectores 0x0000, 0x0001 y 0x0101 | Conforme: la reescritura idéntica y el cambio con restauración dejan los tres sectores idénticos a la copia | Efecto físico del cambio comprobado por el usuario |
 | 2026-10-07 | Recursos (release, 573 KB) | Página del ratón abierta, 30 s en reposo, y luego ventana cerrada | Contadores del proceso | CPU ≈ 0 (0,03 s en 30 s); GDI 36 y USER 96 estables; memoria privada 2,8–3,1 MB; working set 20 MB | El working set supera los 15 MB del plan v0.1. La diferencia son páginas compartidas de DLL del sistema (controles comunes v6, temas y GDI+) que siguen cargadas; la memoria propia es de unos 3 MB |
 | 2026-10-07 | Desconexión con la página de ajustes abierta, alto contraste y Narrador | — | — | Bloqueado/no verificado | Pendiente del usuario |
+| 2026-10-07 | Iluminación: mapa del perfil y luz en vivo | G305 real, 9 escrituras de prueba y 3 envíos en vivo, cada uno autorizado por el usuario | Relectura del sector tras cada escritura; observación del usuario al momento y tras apagar y encender | Conforme: ver `docs/protocolos/logitech-hidpp.md` | El ratón se dejó en la copia original (relectura idéntica byte a byte) |
+| 2026-10-07 | Guardado de la luz desde la página | G305 real; el usuario eligió fija y luego respiración lenta y guardó con el diálogo | Relectura del sector (solo cambia el bloque 0xDB y el CRC), configuración de la app actualizada | Conforme | — |
+| 2026-10-07 | Página con «Iluminación» | Build de depuración, 1180 px, oscuro | Árbol UIA y capturas | Conforme: estructura, nombres «…, elegido», «Guardado: …», estado de error del campo Hex (borde de 2 px, sin vista previa, «Probar la luz» deshabilitado), ratón en reposo con todo deshabilitado y cambios conservados, «Descartar» vuelve a lo guardado sin escribir | Desviaciones 6 y 7 |
+| 2026-10-07 | Teclado de la sección de luz y barra | `SendKeys` y árbol UIA | Un Tab por grupo (efecto, color, Hex, velocidad), flechas cambian la selección y muestran u ocultan color y velocidad; Tab final: «Descartar», «Guardar en el ratón…» y vuelta a «‹ Dispositivos» | Conforme | — |
+| 2026-10-07 | Barra fija al pie | Ráfagas de rueda con captura real de pantalla | La barra no se mueve, sin botones en blanco; el control enfocado queda por encima de la barra | Conforme | — |
+| 2026-10-07 | Claro y 420 px | Cambio en caliente del tema de Windows (devuelto a oscuro) y ventana estrecha | Capturas | Conforme tras corregir la vista previa del color, que se salía de la tarjeta en 420 px | — |
+| 2026-10-07 | «Probar» en vivo desde la página, «Descartar» y tarjeta con la luz | Ejecutable release, G305 real despierto | Sensor leído: 1600 → 1200 con «Probar» y 900 tras «Descartar»; el usuario vio la respiración roja y la vuelta al azul guardado; perfil y configuración sin cambios; la tarjeta muestra «Luz en respiración #0040FF» | Conforme | Seguimiento: el DPI de la app no se reaplica si el ratón se duerme y despierta entre dos sondeos (60 s); vuelve al DPI de arranque de su perfil |
+| 2026-10-07 | Perfiles: sección, «Nuevo perfil», nombre repetido, «Usar» y primera vez | Ejecutable release, G305 real, tema oscuro, 1144 px | Árbol UIA y capturas: «Perfil 1 ✓ Activo · en el ratón» creado sin escribir, fila activa con borde y fondo, «Usar el perfil Juego» y «Eliminar el perfil Juego», error «ya hay un perfil llamado…» con «Crear perfil» deshabilitado y foco inicial en el campo | Conforme tras corregir dos fallos (ver `ERRORES.md`: «Perfil 1» no coincidía y cambios pendientes falsos tras guardar) | Desviaciones 9 a 12 |
+| 2026-10-07 | «Usar» en hardware (H1–H4) | G305 real; cada escritura autorizada por el usuario | Guardar «Juego» (1600 DPI, fija roja); «Usar» de «Perfil 1» y de «Juego» con «Cambiando a…» y resultado verificado en 3,0 y 3,4 s (con 0,5–1 s de sondeo de la prueba); el usuario vio la luz cambiar y mantenerse tras apagar y encender; con el ratón apagado, error «El ratón sigue con «Juego»» y nada escrito; el usuario terminó en «Perfil 1» | Conforme | La memoria del ratón no se devolvió a la copia original del 6/10: el usuario la dejó en «Perfil 1», con sus atajos |
+| 2026-10-07 | Bandeja | Capturas del usuario | «Perfil de G305: Juego ›» bajo la línea del ratón; submenú con «Perfil 1», «Juego» marcado con la opción y «Editar perfiles…»; el usuario cambió de perfil desde ahí y funcionó | Conforme | El globo de fallo desde la bandeja no se provocó |
+| 2026-10-07 | Recursos con perfiles (release, 712 KB) | 30 s en reposo, ventana cerrada | CPU 0,02 s; memoria privada 3,2 MB; working set 19,9 MB; 217 handles; 4 hilos | Conforme con lo medido antes | — |
+| 2026-10-07 | Perfiles: 420 px, tema claro, alto contraste, Narrator | — | — | Bloqueado/no verificado | Pendiente |
 
 ### Desviaciones aprobadas
 
@@ -399,6 +622,18 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 3. **Barra de desplazamiento:** cuando el contenido no cabe, aparece la barra nativa, que es clara también en tema oscuro, porque oscurecerla requiere API no documentadas, excluidas por el plan. La ventana se abre con el ancho del diseño (3 columnas), así que con 1 a 3 dispositivos no se ve. Seguimiento: decidir si se dibuja una barra propia.
 4. **Acciones del selector (plan `ajustes-raton`, 2026-10-07):** solo se ofrecen las acciones cuyo formato se ha observado en el ratón; ver «Botones». Doble clic, Multimedia y Desactivar quedan pendientes de evidencia.
 5. **Texto del diálogo de guardado:** el diseño decía «Antes se guardará una copia del perfil actual». La aplicación guarda una única copia original, que nunca se sobrescribe, y si la comprobación falla vuelve a escribir lo que había. El texto se ajustó para no prometer algo que no ocurre. Pendiente de confirmación del usuario.
+
+6. **Muestra de color elegida (revisión 2026-10-07):** el diseño pedía un anillo de 2 px separado 2 px. Ese anillo se confunde con el anillo de foco, que es igual, así que la muestra elegida lleva **borde de 2 px `text.primary` y una marca de verificación** (negra o blanca según el color), y el foco conserva su anillo. Aceptada el 2026-10-07: el usuario delegó la decisión.
+7. **«Probar la luz»:** el botón de la sección de luz se llama «Probar la luz» y no «Probar», para que su nombre accesible se distinga del «Probar» del DPI. Aceptada el 2026-10-07: el usuario delegó la decisión.
+8. **Orden de Tab del DPI (anterior a esta revisión):** el campo va antes de «−» y «+», porque se creó antes. Se mantiene sin cambios.
+9. **Diálogos de perfiles (plan `perfiles-raton`):** el diálogo de nombre (Nuevo, Renombrar, Guardar como perfil nuevo) y el de 3 botones usan el mismo diálogo modal, ampliado con varias opciones y un campo opcional, en lugar de un diálogo aparte. El comportamiento es el del diseño: foco inicial en el campo, error «Error: …» junto al campo y opción deshabilitada mientras el nombre no es válido.
+10. **Anuncio del estado:** el cambio de perfil se anuncia en una línea de estado (`STATIC`), sin evento de notificación de UI Automation. Pendiente: verificar con Narrator si basta.
+11. **Perfil sin DPI:** «Perfil 1», creado a partir de un ciclo de DPI con niveles distintos, no tiene DPI propio, y su resumen no lo muestra. Al usarlo, el DPI se queda como esté. Se fija en cuanto se guarda un DPI con ese perfil activo.
+13. **Sin pantalla completa (decisión del usuario, 2026-10-07):** solo cuentan como juegos los programas de las bibliotecas de Steam, Xbox, Epic y GOG; los demás se asocian con «Añadir programa…».
+14. **«Configurar…» crea un perfil (decisión del usuario):** el diálogo «Perfil para X» ya no ofrece «Usar un perfil que ya tengo»: crea un perfil con el nombre del programa (editable, copia del activo) y lo asocia. «Añadir programa…» hace lo mismo. Para cambiar el perfil de un programa, su fila tiene «Perfil: X ▾», que abre un diálogo con un botón por perfil y «No cambiar de perfil» (en lugar de un selector nativo).
+15. **Aplicación híbrida y estado «por juego» (decisión del usuario):** durante la partida, la fila activa dice «Activo · por juego» y, si solo están en uso el DPI y la luz, «DPI y luz en uso, sin guardar en el ratón»; el aviso «el ratón no coincide» no salta por el DPI o la luz. La página añade la lista «Juegos detectados sin responder» como alternativa al aviso de Windows.
+16. **Paginador de perfiles (decisión del usuario):** con más de 5 perfiles, la lista muestra 5 por página con «‹ Anterior», «Página 1 de 2» y «Siguiente ›».
+12. **«Restaurar originales»** se mantiene en la sección «Restaurar». Con perfiles, el perfil activo toma lo que guarda el ratón en lugar de borrarse.
 
 ## Regresión visual automatizada
 

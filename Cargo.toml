@@ -36,6 +36,10 @@ windows = { version = "0.62.2", features = [
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_Security",
+    # SPIKE (plan perfiles-por-juego, paso 0): toasts with buttons.
+    "Foundation",
+    "Data_Xml_Dom",
+    "UI_Notifications",
 ] }
 
 [profile.release]

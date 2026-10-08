@@ -4,6 +4,9 @@
 //! public HID++ 2.0 feature description; see `docs/protocolos/logitech-hidpp.md`.
 //! Only what was observed is interpreted; any other bytes are kept verbatim.
 
+use super::DpiRange;
+use super::razer::Rgb;
+
 /// CRC-CCITT (poly 0x1021, init 0xFFFF) as stored big-endian in the last two
 /// bytes of a sector. Verified against the G305 directory and profile.
 pub fn crc_ccitt(data: &[u8]) -> u16 {
@@ -128,6 +131,10 @@ pub enum EditError {
     LeftButton,
     NoSuchButton,
     NotAssignable,
+    /// DPI not accepted by the sensor.
+    BadDpi,
+    /// Effect not declared by the device or speed outside the tables.
+    BadLight,
     /// Profile not readable or sector not a listed user profile.
     BadProfile,
 }
@@ -155,7 +162,7 @@ impl UserSector {
 pub struct Seal(());
 
 /// A complete, validated profile sector ready to be written: same size as
-/// the original, valid CRC, only the button bytes changed.
+/// the original, valid CRC, only the editable ranges changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileImage {
     sector: UserSector,
@@ -201,26 +208,175 @@ fn with_crc(mut sector: Vec<u8>) -> Vec<u8> {
     sector
 }
 
-/// Builds the image that changes some buttons of the profile read from the
-/// device (`user`, at `sector`). Everything except the edited 4-byte entries
-/// and the CRC stays byte-for-byte identical.
-pub fn apply_buttons(
+/// First DPI entry of the cycle: 4 little-endian u16 values, then `00 00`.
+/// The entry the mouse starts with is not stored in the profile (observed:
+/// byte 1 does not select it), so a saved DPI fills every entry.
+const DPI_OFFSET: usize = 0x03;
+const DPI_ENTRIES: usize = 4;
+/// Active light block (11 bytes). The block at 0xD0 had no visible effect and
+/// is never written.
+const LIGHT_OFFSET: usize = 0xdb;
+const LIGHT_LEN: usize = 11;
+
+/// Closed speed tables (period in ms), slow to fast. Observed on the G305:
+/// cycle 8000 ms = about 8 s per turn, breathing 2000 and 6000 ms.
+pub const CYCLE_PERIODS: [u16; 3] = [12000, 8000, 4000];
+pub const BREATHING_PERIODS: [u16; 3] = [6000, 4000, 2000];
+
+/// Light effect of the active block. The effect ids match those declared by
+/// feature 0x8070 (`00` off, `01` fixed, `03` cycle, `0A` breathing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Light {
+    Off,
+    Fixed(Rgb),
+    Cycle { period_ms: u16 },
+    Breathing { color: Rgb, period_ms: u16 },
+}
+
+impl Light {
+    pub fn effect_id(self) -> u16 {
+        match self {
+            Light::Off => 0x00,
+            Light::Fixed(_) => 0x01,
+            Light::Cycle { .. } => 0x03,
+            Light::Breathing { .. } => 0x0a,
+        }
+    }
+
+    fn decode(b: &[u8]) -> Option<Light> {
+        let rgb = || Rgb {
+            r: b[1],
+            g: b[2],
+            b: b[3],
+        };
+        let be = |i: usize| u16::from_be_bytes([b[i], b[i + 1]]);
+        Some(match b[0] {
+            0x00 => Light::Off,
+            0x01 => Light::Fixed(rgb()),
+            0x03 => Light::Cycle { period_ms: be(6) },
+            0x0a => Light::Breathing {
+                color: rgb(),
+                period_ms: be(4),
+            },
+            _ => return None,
+        })
+    }
+
+    /// Writes only the bytes this effect uses; the rest of the block keeps
+    /// its bytes (as in the verified writes).
+    fn write(self, b: &mut [u8]) {
+        b[0] = self.effect_id() as u8;
+        match self {
+            Light::Off => {}
+            Light::Fixed(c) => b[1..4].copy_from_slice(&[c.r, c.g, c.b]),
+            Light::Cycle { period_ms } => b[6..8].copy_from_slice(&period_ms.to_be_bytes()),
+            Light::Breathing { color, period_ms } => {
+                b[1..4].copy_from_slice(&[color.r, color.g, color.b]);
+                b[4..6].copy_from_slice(&period_ms.to_be_bytes());
+                // Verified with the three following bytes at 0.
+                b[6..9].fill(0);
+            }
+        }
+    }
+
+    /// The 10 parameter bytes of the block (`+1..+11`), which is also the
+    /// parameter layout of 0x8070 setZoneEffect (verified on the G305).
+    pub fn params(self) -> [u8; LIGHT_LEN - 1] {
+        let mut block = [0u8; LIGHT_LEN];
+        self.write(&mut block);
+        block[1..].try_into().unwrap_or_default()
+    }
+
+    /// Speeds come from the closed tables only.
+    pub fn writable(self) -> bool {
+        match self {
+            Light::Off | Light::Fixed(_) => true,
+            Light::Cycle { period_ms } => CYCLE_PERIODS.contains(&period_ms),
+            Light::Breathing { period_ms, .. } => BREATHING_PERIODS.contains(&period_ms),
+        }
+    }
+}
+
+/// Light stored in the active block, if its effect is one this code knows.
+pub fn parse_light(sector: &[u8]) -> Option<Light> {
+    Light::decode(sector.get(LIGHT_OFFSET..LIGHT_OFFSET + LIGHT_LEN)?)
+}
+
+/// The 4 DPI entries of the cycle.
+pub fn parse_dpi_cycle(sector: &[u8]) -> Option<[u16; DPI_ENTRIES]> {
+    let raw = sector.get(DPI_OFFSET..DPI_OFFSET + 2 * DPI_ENTRIES)?;
+    let mut out = [0u16; DPI_ENTRIES];
+    for (o, c) in out.iter_mut().zip(raw.chunks_exact(2)) {
+        *o = u16::from_le_bytes([c[0], c[1]]);
+    }
+    Some(out)
+}
+
+/// What the device accepts, read from it (not from the profile).
+pub struct Limits<'a> {
+    pub button_count: u8,
+    /// DPI declared by the sensor (0x2201); `None` forbids DPI edits.
+    pub dpi: Option<&'a DpiRange>,
+    /// Effect ids declared by 0x8070; empty forbids light edits.
+    pub effects: &'a [u16],
+}
+
+/// Everything that can change in one save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfileEdits {
+    /// Fills every DPI entry of the cycle.
+    pub dpi: Option<u16>,
+    pub light: Option<Light>,
+    pub buttons: Vec<(usize, Action)>,
+}
+
+/// Checks the layout this code relies on: CRC, length, the DPI terminator
+/// and a known light effect.
+fn known_layout(user: &[u8], button_count: u8) -> bool {
+    let buttons_end = BUTTONS_OFFSET + 4 * button_count as usize;
+    let dpi_end = DPI_OFFSET + 2 * DPI_ENTRIES;
+    crc_ok(user)
+        && user.len() >= LIGHT_OFFSET + LIGHT_LEN + 2
+        && buttons_end <= LIGHT_OFFSET
+        && user[dpi_end..dpi_end + 2] == [0, 0]
+        && parse_light(user).is_some()
+}
+
+/// Builds the image for one save from the profile read from the device
+/// (`user`, at `sector`). Only the DPI entries (0x03..0x0B), the active light
+/// block (0xDB..0xE6), the edited 4-byte button entries and the CRC change.
+pub fn apply_edits(
     user: &[u8],
     sector: u16,
     directory: &[u8],
-    button_count: u8,
-    edits: &[(usize, Action)],
+    limits: &Limits,
+    edits: &ProfileEdits,
 ) -> Result<ProfileImage, EditError> {
     let sector = UserSector::new(sector, directory).ok_or(EditError::BadProfile)?;
-    if !crc_ok(user) || user.len() < BUTTONS_OFFSET + 4 * button_count as usize + 2 {
+    if !known_layout(user, limits.button_count) {
         return Err(EditError::BadProfile);
     }
     let mut bytes = user.to_vec();
-    for &(index, action) in edits {
+    if let Some(dpi) = edits.dpi {
+        if dpi == 0 || !limits.dpi.is_some_and(|r| r.contains(dpi)) {
+            return Err(EditError::BadDpi);
+        }
+        for i in 0..DPI_ENTRIES {
+            let at = DPI_OFFSET + 2 * i;
+            bytes[at..at + 2].copy_from_slice(&dpi.to_le_bytes());
+        }
+    }
+    if let Some(light) = edits.light {
+        if !light.writable() || !limits.effects.contains(&light.effect_id()) {
+            return Err(EditError::BadLight);
+        }
+        light.write(&mut bytes[LIGHT_OFFSET..LIGHT_OFFSET + LIGHT_LEN]);
+    }
+    for &(index, action) in &edits.buttons {
         if index == 0 {
             return Err(EditError::LeftButton);
         }
-        if index >= button_count as usize {
+        if index >= limits.button_count as usize {
             return Err(EditError::NoSuchButton);
         }
         if !assignable(action) {
@@ -260,23 +416,40 @@ pub fn restore_image(
     })
 }
 
-/// Image that copies the factory button entries (`rom`) into the current
-/// profile; every other byte of the current profile is kept.
-pub fn factory_buttons(
+/// Image that copies the factory DPI cycle, active light block and button
+/// entries (`rom`) into the current profile; every other byte is kept.
+pub fn factory_image(
     current: &[u8],
     rom: &[u8],
     sector: u16,
     directory: &[u8],
-    button_count: u8,
+    limits: &Limits,
 ) -> Result<ProfileImage, EditError> {
     let sector = UserSector::new(sector, directory).ok_or(EditError::BadProfile)?;
-    let end = BUTTONS_OFFSET + 4 * button_count as usize;
-    if !crc_ok(current) || current.len() != rom.len() || current.len() < end + 2 {
+    if !known_layout(current, limits.button_count) || current.len() != rom.len() {
         return Err(EditError::BadProfile);
     }
+    let buttons_end = BUTTONS_OFFSET + 4 * limits.button_count as usize;
+    let ranges = [
+        DPI_OFFSET..DPI_OFFSET + 2 * DPI_ENTRIES + 2,
+        BUTTONS_OFFSET..buttons_end,
+        LIGHT_OFFSET..LIGHT_OFFSET + LIGHT_LEN,
+    ];
     let mut bytes = current.to_vec();
-    bytes[BUTTONS_OFFSET..end].copy_from_slice(&rom[BUTTONS_OFFSET..end]);
-    // The factory left button must still be a left click.
+    for r in ranges {
+        bytes[r.clone()].copy_from_slice(&rom[r]);
+    }
+    // The factory copy must pass the same checks as an edit.
+    let dpi_ok = parse_dpi_cycle(&bytes).is_some_and(|c| {
+        c[0] != 0
+            && c.iter()
+                .all(|&d| d == 0 || limits.dpi.is_some_and(|r| r.contains(d)))
+    });
+    let light_ok = parse_light(&bytes)
+        .is_some_and(|l| l == Light::Off || limits.effects.contains(&l.effect_id()));
+    if !dpi_ok || !light_ok {
+        return Err(EditError::BadProfile);
+    }
     if Action::decode(
         bytes[BUTTONS_OFFSET..BUTTONS_OFFSET + 4]
             .try_into()
@@ -342,6 +515,27 @@ pub(crate) mod samples {
             [0xff, 0xff],
         )
     }
+
+    /// Sector written and read back in hardware test H1-6 (2026-10-07):
+    /// breathing red at 6000 ms and the second DPI entry set to 1200.
+    pub fn lit_profile() -> Vec<u8> {
+        let mut v = user_profile();
+        v[0x05..0x07].copy_from_slice(&[0xb0, 0x04]);
+        v[0xdb..0xe4].copy_from_slice(&[0x0a, 0xff, 0x00, 0x00, 0x17, 0x70, 0x00, 0x00, 0x00]);
+        v[253..].copy_from_slice(&[0xc4, 0x34]);
+        v
+    }
+
+    pub fn dpi_range() -> crate::protocol::DpiRange {
+        crate::protocol::DpiRange::Range {
+            min: 200,
+            max: 12000,
+            step: 50,
+        }
+    }
+
+    /// Effect ids declared by the G305 (0x8070 getZoneEffectInfo).
+    pub const EFFECTS: [u16; 4] = [0x00, 0x01, 0x03, 0x0a];
 }
 
 #[cfg(test)]
@@ -444,12 +638,45 @@ mod tests {
             let _ = parse_info(&data);
             let _ = parse_directory(&data);
             let _ = parse_buttons(&data, 6);
+            let _ = parse_light(&data);
+            let _ = parse_dpi_cycle(&data);
         }
     }
 
-    fn image(edits: &[(usize, Action)]) -> Result<ProfileImage, EditError> {
-        apply_buttons(&samples::user_profile(), 1, &samples::directory(), 6, edits)
+    fn limits(range: &DpiRange) -> Limits<'_> {
+        Limits {
+            button_count: 6,
+            dpi: Some(range),
+            effects: &samples::EFFECTS,
+        }
     }
+
+    fn edit_profile(user: &[u8], edits: &ProfileEdits) -> Result<ProfileImage, EditError> {
+        let range = samples::dpi_range();
+        apply_edits(user, 1, &samples::directory(), &limits(&range), edits)
+    }
+
+    fn image(buttons: &[(usize, Action)]) -> Result<ProfileImage, EditError> {
+        edit_profile(
+            &samples::user_profile(),
+            &ProfileEdits {
+                buttons: buttons.to_vec(),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn changed(before: &[u8], after: &[u8]) -> Vec<usize> {
+        (0..before.len())
+            .filter(|&i| before[i] != after[i])
+            .collect()
+    }
+
+    const RED: Rgb = Rgb {
+        r: 0xff,
+        g: 0,
+        b: 0,
+    };
 
     #[test]
     fn no_edits_rewrites_identical_bytes() {
@@ -461,10 +688,7 @@ mod tests {
     #[test]
     fn one_edit_changes_only_its_entry_and_the_crc() {
         let img = image(&[(4, Action::Mouse(0x10))]).unwrap();
-        let before = samples::user_profile();
-        let changed: Vec<usize> = (0..before.len())
-            .filter(|&i| before[i] != img.bytes()[i])
-            .collect();
+        let changed = changed(&samples::user_profile(), img.bytes());
         assert!(
             changed
                 .iter()
@@ -509,7 +733,7 @@ mod tests {
         let mut bad = samples::user_profile();
         bad[0x40] ^= 1;
         assert_eq!(
-            apply_buttons(&bad, 1, &samples::directory(), 6, &[]),
+            edit_profile(&bad, &ProfileEdits::default()),
             Err(EditError::BadProfile)
         );
     }
@@ -518,11 +742,23 @@ mod tests {
     fn writes_never_target_directory_or_factory_sectors() {
         let dir = samples::directory();
         let user = samples::user_profile();
+        let range = samples::dpi_range();
+        let none = ProfileEdits::default();
         for sector in [0x0000u16, 0x0101, 0x0100, 0x0002, 0xffff] {
             assert_eq!(
-                apply_buttons(&user, sector, &dir, 6, &[]),
+                apply_edits(&user, sector, &dir, &limits(&range), &none),
                 Err(EditError::BadProfile),
                 "{sector:#06x}"
+            );
+            assert!(
+                factory_image(
+                    &user,
+                    &samples::rom_profile(),
+                    sector,
+                    &dir,
+                    &limits(&range)
+                )
+                .is_err()
             );
             assert!(restore_image(&user, &user, sector, &dir).is_err());
         }
@@ -530,7 +766,7 @@ mod tests {
         let mut bad_dir = dir.clone();
         bad_dir[10] ^= 1;
         assert_eq!(
-            apply_buttons(&user, 1, &bad_dir, 6, &[]),
+            apply_edits(&user, 1, &bad_dir, &limits(&range), &none),
             Err(EditError::BadProfile)
         );
     }
@@ -560,8 +796,15 @@ mod tests {
     #[test]
     fn factory_and_restore_images() {
         let user = samples::user_profile();
-        let img =
-            factory_buttons(&user, &samples::rom_profile(), 1, &samples::directory(), 6).unwrap();
+        let range = samples::dpi_range();
+        let img = factory_image(
+            &user,
+            &samples::rom_profile(),
+            1,
+            &samples::directory(),
+            &limits(&range),
+        )
+        .unwrap();
         let b = parse_buttons(img.bytes(), 6).unwrap();
         assert_eq!(
             (b[3], b[4], b[5]),
@@ -571,8 +814,20 @@ mod tests {
                 Action::Raw([0x90, 0x05, 0, 0])
             )
         );
-        assert_eq!(&img.bytes()[0xd0..0xe6], &user[0xd0..0xe6]);
         assert!(crc_ok(img.bytes()));
+        // From a lit profile, factory copies the DPI cycle, light and
+        // buttons back, and keeps every other byte (block 0xD0, bytes 0-2).
+        let lit = samples::lit_profile();
+        let rom = samples::rom_profile();
+        let img = factory_image(&lit, &rom, 1, &samples::directory(), &limits(&range)).unwrap();
+        let editable = |i: usize| {
+            (0x03..0x0d).contains(&i) || (0x20..0x38).contains(&i) || (0xdb..0xe6).contains(&i)
+        };
+        for i in 0..253 {
+            let want = if editable(i) { rom[i] } else { lit[i] };
+            assert_eq!(img.bytes()[i], want, "byte {i:#04x}");
+        }
+        assert_eq!(parse_light(img.bytes()), Some(Light::Off));
         let edited = image(&[(3, Action::Mouse(0x08))]).unwrap();
         let back = restore_image(&user, edited.bytes(), 1, &samples::directory()).unwrap();
         assert_eq!(back.bytes(), user.as_slice());
@@ -587,5 +842,225 @@ mod tests {
             restore_image(&no_left, &user, 1, &samples::directory()),
             Err(EditError::LeftButton)
         );
+    }
+
+    #[test]
+    fn real_lit_profile_decodes() {
+        let lit = samples::lit_profile();
+        assert!(crc_ok(&lit));
+        assert_eq!(
+            parse_light(&lit),
+            Some(Light::Breathing {
+                color: RED,
+                period_ms: 6000
+            })
+        );
+        assert_eq!(parse_dpi_cycle(&lit), Some([400, 1200, 1600, 3200]));
+        assert_eq!(parse_light(&samples::user_profile()), Some(Light::Off));
+        assert_eq!(
+            parse_dpi_cycle(&samples::user_profile()),
+            Some([400, 800, 1600, 3200])
+        );
+    }
+
+    #[test]
+    fn verified_writes_are_reproduced_byte_for_byte() {
+        // H1-6 started from the original copy: same edits, same bytes and CRC
+        // (except the DPI, which the app writes to every entry).
+        let img = edit_profile(
+            &samples::user_profile(),
+            &ProfileEdits {
+                light: Some(Light::Breathing {
+                    color: RED,
+                    period_ms: 6000,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut want = samples::lit_profile();
+        want[0x05..0x07].copy_from_slice(&[0x20, 0x03]);
+        assert_eq!(&img.bytes()[..253], &want[..253]);
+    }
+
+    #[test]
+    fn each_field_changes_only_its_range_and_the_crc() {
+        let user = samples::user_profile();
+        type InRange = fn(usize) -> bool;
+        let cases: [(ProfileEdits, InRange); 4] = [
+            (
+                ProfileEdits {
+                    dpi: Some(1650),
+                    ..Default::default()
+                },
+                |i| (0x03..0x0b).contains(&i),
+            ),
+            (
+                ProfileEdits {
+                    light: Some(Light::Fixed(Rgb {
+                        r: 0x12,
+                        g: 0xab,
+                        b: 0x34,
+                    })),
+                    ..Default::default()
+                },
+                |i| (0xdb..0xe6).contains(&i),
+            ),
+            (
+                ProfileEdits {
+                    light: Some(Light::Cycle { period_ms: 4000 }),
+                    ..Default::default()
+                },
+                |i| (0xdb..0xe6).contains(&i),
+            ),
+            (
+                ProfileEdits {
+                    dpi: Some(800),
+                    light: Some(Light::Breathing {
+                        color: RED,
+                        period_ms: 2000,
+                    }),
+                    buttons: vec![(3, Action::Mouse(0x08))],
+                },
+                |i| {
+                    (0x03..0x0b).contains(&i)
+                        || (0xdb..0xe6).contains(&i)
+                        || (0x2c..0x30).contains(&i)
+                },
+            ),
+        ];
+        for (edits, allowed) in cases {
+            let img = edit_profile(&user, &edits).unwrap();
+            let changed = changed(&user, img.bytes());
+            assert!(
+                changed.iter().all(|&i| allowed(i) || i >= 253),
+                "{edits:?}: {changed:?}"
+            );
+            assert!(crc_ok(img.bytes()));
+            if let Some(d) = edits.dpi {
+                assert_eq!(parse_dpi_cycle(img.bytes()), Some([d; 4]));
+            }
+            if let Some(l) = edits.light {
+                assert_eq!(parse_light(img.bytes()), Some(l));
+            }
+            // The other light block is never written.
+            assert_eq!(&img.bytes()[0xd0..0xdb], &user[0xd0..0xdb]);
+        }
+    }
+
+    #[test]
+    fn dpi_and_light_outside_the_device_limits_are_rejected() {
+        let user = samples::user_profile();
+        for dpi in [0, 150, 1625, 12050] {
+            let e = ProfileEdits {
+                dpi: Some(dpi),
+                ..Default::default()
+            };
+            assert_eq!(edit_profile(&user, &e), Err(EditError::BadDpi), "{dpi}");
+        }
+        for light in [
+            Light::Cycle { period_ms: 5000 },
+            Light::Breathing {
+                color: RED,
+                period_ms: 0,
+            },
+        ] {
+            let e = ProfileEdits {
+                light: Some(light),
+                ..Default::default()
+            };
+            assert_eq!(edit_profile(&user, &e), Err(EditError::BadLight));
+        }
+        // No DPI list or no declared effects: nothing can be written.
+        let none = Limits {
+            button_count: 6,
+            dpi: None,
+            effects: &[0x00],
+        };
+        let dir = samples::directory();
+        let e = ProfileEdits {
+            dpi: Some(800),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_edits(&user, 1, &dir, &none, &e),
+            Err(EditError::BadDpi)
+        );
+        let e = ProfileEdits {
+            light: Some(Light::Fixed(RED)),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_edits(&user, 1, &dir, &none, &e),
+            Err(EditError::BadLight)
+        );
+    }
+
+    #[test]
+    fn unknown_layouts_are_not_edited() {
+        let range = samples::dpi_range();
+        let mut no_end = samples::user_profile();
+        no_end[0x0b] = 0x01;
+        let mut odd_light = samples::user_profile();
+        odd_light[0xdb] = 0x07;
+        for bad in [no_end, odd_light] {
+            let bad = with_crc(bad);
+            assert_eq!(
+                edit_profile(&bad, &ProfileEdits::default()),
+                Err(EditError::BadProfile)
+            );
+            assert!(
+                factory_image(
+                    &bad,
+                    &samples::rom_profile(),
+                    1,
+                    &samples::directory(),
+                    &limits(&range)
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn random_profiles_only_change_editable_ranges() {
+        // Deterministic pseudo-random sectors with a valid layout.
+        let mut x: u32 = 0x9e37_79b9;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        let range = samples::dpi_range();
+        for _ in 0..200 {
+            let mut user: Vec<u8> = (0..255).map(|_| next() as u8).collect();
+            user[0x0b..0x0d].fill(0);
+            user[0xdb] = [0x00, 0x01, 0x03, 0x0a][next() as usize % 4];
+            user[0x20..0x24].copy_from_slice(&[0x80, 0x01, 0x00, 0x01]);
+            let user = with_crc(user);
+            let edits = ProfileEdits {
+                dpi: Some(200 + 50 * (next() % 237) as u16),
+                light: Some(Light::Fixed(Rgb {
+                    r: next() as u8,
+                    g: next() as u8,
+                    b: next() as u8,
+                })),
+                buttons: vec![(1 + next() as usize % 5, Action::Mouse(0x04))],
+            };
+            let img =
+                apply_edits(&user, 1, &samples::directory(), &limits(&range), &edits).unwrap();
+            for i in changed(&user, img.bytes()) {
+                assert!(
+                    (0x03..0x0b).contains(&i)
+                        || (0x24..0x38).contains(&i)
+                        || (0xdb..0xe6).contains(&i)
+                        || i >= 253,
+                    "byte {i:#04x}"
+                );
+            }
+            assert!(crc_ok(img.bytes()));
+            assert_eq!(parse_light(img.bytes()), edits.light);
+        }
     }
 }

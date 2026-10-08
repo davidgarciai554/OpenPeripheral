@@ -90,7 +90,12 @@ pub fn tooltip(shared: &Shared) -> String {
                 Status::Failed(_) => d.last_battery,
                 _ => None,
             }?;
-            Some(format!("{}: {}", short_name(&d.info.name), battery(b)))
+            Some(format!(
+                "{}: {}{}",
+                short_name(&d.info.name),
+                battery(b),
+                super::profiles::tooltip_suffix(d)
+            ))
         })
         .collect();
     if lines.is_empty() {
@@ -284,6 +289,26 @@ pub fn color_label(snap: &Snapshot) -> &'static str {
     }
 }
 
+/// Colour row of a card: the colour this app applied (keyboards, pads) or
+/// a mouse's saved light, e.g. ("Luz fija", Some(#00C8FF)) or
+/// ("Luz en ciclo de colores", None).
+pub fn color_row(snap: &Snapshot) -> Option<(&'static str, Option<crate::protocol::razer::Rgb>)> {
+    use crate::protocol::onboard::Light;
+    if let Some(c) = snap.applied_color {
+        return Some((color_label(snap), Some(c)));
+    }
+    let profile = match &snap.profile {
+        crate::app::Profile::Read(v) => v.light,
+        _ => None,
+    };
+    Some(match snap.saved_light.or(profile)? {
+        Light::Off => ("Luz apagada", None),
+        Light::Fixed(c) => ("Luz fija", Some(c)),
+        Light::Cycle { .. } => ("Luz en ciclo de colores", None),
+        Light::Breathing { color, .. } => ("Luz en respiración", Some(color)),
+    })
+}
+
 /// Full text a screen reader announces for a card (one accessible name).
 pub fn card_summary(snap: &Snapshot) -> String {
     let mut parts = vec![
@@ -316,12 +341,11 @@ pub fn card_summary(snap: &Snapshot) -> String {
     if let Some(c) = capabilities(snap) {
         parts.push(c);
     }
-    if let Some(c) = snap.applied_color {
-        parts.push(format!(
-            "{} {}",
-            color_label(snap),
-            crate::config::to_hex(c)
-        ));
+    if let Some((label, c)) = color_row(snap) {
+        parts.push(match c {
+            Some(c) => format!("{label} {}", crate::config::to_hex(c)),
+            None => label.to_string(),
+        });
     }
     if matches!(snap.status, Status::Disconnected) && snap.saved {
         parts.push("Los ajustes guardados se aplicarán al volver a conectarlo".into());
@@ -360,10 +384,20 @@ mod tests {
             status,
             last_battery: None,
             saved: false,
+            saved_dpi: None,
+            saved_light: None,
             applied_color: None,
             original_dpi: None,
             profile: crate::app::Profile::NotRead,
             backup: None,
+            profiles: Vec::new(),
+            active_profile: None,
+            programs: Vec::new(),
+            auto_switch: true,
+            ask_new: true,
+            game: None,
+            game_previous: None,
+            unanswered: Vec::new(),
         }
     }
 
@@ -574,6 +608,19 @@ mod tests {
             card_summary(&low)
                 .contains("Nivel de batería: 1 de 5, 12 %, descargando, batería baja")
         );
+
+        let mut mouse = snap("G305", Status::Ok(State::default()));
+        mouse.saved_light = Some(crate::protocol::onboard::Light::Breathing {
+            color: crate::protocol::razer::Rgb {
+                r: 0,
+                g: 0xc8,
+                b: 0xff,
+            },
+            period_ms: 6000,
+        });
+        assert!(card_summary(&mouse).ends_with("Luz en respiración #00C8FF"));
+        mouse.saved_light = Some(crate::protocol::onboard::Light::Cycle { period_ms: 8000 });
+        assert!(card_summary(&mouse).ends_with("Luz en ciclo de colores"));
 
         let mut pad = snap("DualSense", Status::Disconnected);
         pad.info.kind = Kind::Gamepad;

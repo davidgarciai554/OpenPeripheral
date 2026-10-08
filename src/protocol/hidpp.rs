@@ -23,6 +23,7 @@ pub mod feature {
     // Read only: changing it needs host mode (0x8100), excluded from v0.1.
     pub const REPORT_RATE: u16 = 0x8060;
     pub const ONBOARD_PROFILES: u16 = 0x8100;
+    pub const COLOR_LED_EFFECTS: u16 = 0x8070;
 }
 
 /// Every request this application is able to send. There is intentionally no
@@ -64,6 +65,25 @@ pub enum Request {
     ReportRateList,
     /// 0x8060 fn1.
     GetReportRate,
+    /// 0x8070 fn0: number of light zones. Read only.
+    LedInfo,
+    /// 0x8070 fn1: zone location and number of effects. Read only.
+    LedZoneInfo {
+        zone: u8,
+    },
+    /// 0x8070 fn2: id of the `index`-th effect of a zone. Read only.
+    LedEffectInfo {
+        zone: u8,
+        index: u8,
+    },
+    /// 0x8070 fn3 setZoneEffect on zone 0. Volatile: the mouse returns to
+    /// its profile light when switched off. The last (persistence) byte is
+    /// always 0.
+    SetLight {
+        /// Position of the effect in the zone's effect list.
+        effect_index: u8,
+        light: super::onboard::Light,
+    },
     /// 0x8100 fn0: memory layout (sector size, button count…).
     OnboardInfo,
     /// 0x8100 fn4: sector of the active profile.
@@ -101,6 +121,9 @@ impl Request {
             UnifiedBatteryStatus => feature::UNIFIED_BATTERY,
             DpiList { .. } | GetDpi { .. } | SetDpi { .. } => feature::ADJUSTABLE_DPI,
             ReportRateList | GetReportRate => feature::REPORT_RATE,
+            LedInfo | LedZoneInfo { .. } | LedEffectInfo { .. } | SetLight { .. } => {
+                feature::COLOR_LED_EFFECTS
+            }
             OnboardInfo
             | GetCurrentProfile
             | MemoryRead { .. }
@@ -129,6 +152,18 @@ impl Request {
             SetDpi { sensor, dpi } => (3, p4([sensor, (dpi >> 8) as u8, dpi as u8, 0])),
             ReportRateList => (0, p4([0; 4])),
             GetReportRate => (1, p4([0; 4])),
+            LedInfo => (0, p4([0; 4])),
+            LedZoneInfo { zone } => (1, p4([zone, 0, 0, 0])),
+            LedEffectInfo { zone, index } => (2, p4([zone, index, 0, 0])),
+            SetLight {
+                effect_index,
+                light,
+            } => {
+                let mut p = [0u8; 16];
+                p[1] = effect_index;
+                p[2..12].copy_from_slice(&light.params());
+                (3, p)
+            }
             OnboardInfo => (0, p4([0; 4])),
             GetCurrentProfile => (4, p4([0; 4])),
             MemoryRead { sector, offset } => {
@@ -177,6 +212,31 @@ pub enum Reply<'a> {
     Error(u8),
     /// HID++ 1.0 error (sub id 0x8F), e.g. device not connected to receiver.
     Error10(u8),
+}
+
+/// Link state reported by the receiver for one of its devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    Up,
+    Down,
+}
+
+/// Receiver notification 0x41 (HID++ 1.0 short report): device `index`
+/// (1-6) connected or disconnected. Observed on a LIGHTSPEED receiver when
+/// the G305 is switched off (`10 01 41 0D 62 74 40`, bit 0x40 of byte 4 set:
+/// no link) and on (`10 01 41 0D A2 74 40`).
+pub fn parse_connection(r: &[u8]) -> Option<(u8, Link)> {
+    match r {
+        [REPORT_SHORT, index @ 1..=6, 0x41, _, flags, ..] => Some((
+            *index,
+            if flags & 0x40 == 0 {
+                Link::Up
+            } else {
+                Link::Down
+            },
+        )),
+        _ => None,
+    }
 }
 
 /// Matches an incoming report against the request that produced `sent`.
@@ -286,6 +346,21 @@ pub fn parse_report_rate(p: &[u8]) -> Option<u8> {
     (1..=8).contains(&ms).then_some(ms)
 }
 
+/// 0x8070 getInfo: number of light zones.
+pub fn parse_led_zone_count(p: &[u8]) -> Option<u8> {
+    p.first().copied()
+}
+
+/// 0x8070 getZoneInfo: number of effects of the zone.
+pub fn parse_led_effect_count(p: &[u8]) -> Option<u8> {
+    p.get(3).copied()
+}
+
+/// 0x8070 getZoneEffectInfo: effect id (u16 big-endian at bytes 2..4).
+pub fn parse_led_effect_id(p: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes([*p.get(2)?, *p.get(3)?]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +370,93 @@ mod tests {
         let r = Request::GetFeature { feature: 0x1000 }.encode(1, 0);
         assert_eq!(&r[..7], &[0x11, 0x01, 0x00, 0x0b, 0x10, 0x00, 0x00]);
         assert!(r[7..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn connection_notifications_as_captured() {
+        // Captured on the G305's receiver when switching the mouse off and on.
+        assert_eq!(
+            parse_connection(&[0x10, 0x01, 0x41, 0x0d, 0x62, 0x74, 0x40]),
+            Some((1, Link::Down))
+        );
+        assert_eq!(
+            parse_connection(&[0x10, 0x01, 0x41, 0x0d, 0xa2, 0x74, 0x40]),
+            Some((1, Link::Up))
+        );
+        // Replies to pings of absent devices, other reports, truncated ones.
+        for r in [
+            &[0x10, 0x02, 0x8f, 0x00, 0x1b, 0x08, 0x00][..],
+            &[0x11, 0x01, 0x04, 0x00, 0x01, 0x01, 0x01],
+            &[0x10, 0x00, 0x41, 0x0d, 0xa2, 0x74, 0x40],
+            &[0x10, 0x07, 0x41, 0x0d, 0xa2, 0x74, 0x40],
+            &[0x10, 0x01, 0x41, 0x0d],
+            &[],
+        ] {
+            assert_eq!(parse_connection(r), None, "{r:02x?}");
+        }
+    }
+
+    #[test]
+    fn encodes_light_reads() {
+        assert_eq!(
+            &Request::LedInfo.encode(1, 6)[..5],
+            &[0x11, 0x01, 0x06, 0x0b, 0x00]
+        );
+        assert_eq!(
+            &Request::LedZoneInfo { zone: 0 }.encode(1, 6)[..5],
+            &[0x11, 0x01, 0x06, 0x1b, 0x00]
+        );
+        assert_eq!(
+            &Request::LedEffectInfo { zone: 0, index: 3 }.encode(1, 6)[..6],
+            &[0x11, 0x01, 0x06, 0x2b, 0x00, 0x03]
+        );
+        assert_eq!(Request::LedInfo.feature(), feature::COLOR_LED_EFFECTS);
+        // Payloads read from the G305.
+        assert_eq!(parse_led_zone_count(&[0x01, 0, 0, 0, 0x14]), Some(1));
+        assert_eq!(parse_led_effect_count(&[0, 0, 0x01, 0x04]), Some(4));
+        assert_eq!(
+            parse_led_effect_id(&[0x00, 0x03, 0x00, 0x0a, 0xc1, 0x05]),
+            Some(0x0a)
+        );
+        assert_eq!(parse_led_effect_id(&[0x00]), None);
+    }
+
+    #[test]
+    fn encodes_live_light_as_sent_in_hardware_test_h2() {
+        use super::super::onboard::Light;
+        use super::super::razer::Rgb;
+        let red = Rgb {
+            r: 0xff,
+            g: 0,
+            b: 0,
+        };
+        // Exact parameters verified on the G305 (2026-10-07).
+        let cases = [
+            (1, Light::Fixed(red), "0001ff00000000000000000000000000"),
+            (
+                3,
+                Light::Breathing {
+                    color: red,
+                    period_ms: 2000,
+                },
+                "0003ff000007d0000000000000000000",
+            ),
+            (
+                2,
+                Light::Cycle { period_ms: 4000 },
+                "000200000000000fa000000000000000",
+            ),
+        ];
+        for (effect_index, light, hex) in cases {
+            let r = Request::SetLight {
+                effect_index,
+                light,
+            }
+            .encode(1, 6);
+            assert_eq!(&r[..4], &[0x11, 0x01, 0x06, 0x3b]);
+            let params: String = r[4..].iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(params, hex);
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use crate::devices::{self, Device, Error, Result, Transport};
 use hidapi::{HidApi, HidDevice};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 
 pub struct HidTransport(HidDevice);
 
@@ -29,6 +29,34 @@ impl Transport for HidTransport {
     fn get_feature(&self, buf: &mut [u8]) -> Result<usize> {
         self.0.get_feature_report(buf).map_err(io)
     }
+}
+
+/// Short HID++ collection (usage page 0xFF00, usage 0x0001) of every
+/// whitelisted HID++ receiver: (vid, pid, path). Its device-connection
+/// notifications arrive there. Uses the last enumeration of `api`.
+pub fn receivers(api: &HidApi) -> Vec<(u16, u16, CString)> {
+    let accepted: Vec<(u16, u16, i32)> = api
+        .device_list()
+        .filter(|d| {
+            devices::lookup(
+                d.vendor_id(),
+                d.product_id(),
+                d.usage_page(),
+                d.usage(),
+                d.interface_number(),
+            )
+            .is_some_and(|s| s.driver == devices::Driver::Hidpp)
+        })
+        .map(|d| (d.vendor_id(), d.product_id(), d.interface_number()))
+        .collect();
+    api.device_list()
+        .filter(|d| {
+            d.usage_page() == 0xff00
+                && d.usage() == 0x0001
+                && accepted.contains(&(d.vendor_id(), d.product_id(), d.interface_number()))
+        })
+        .map(|d| (d.vendor_id(), d.product_id(), d.path().to_owned()))
+        .collect()
 }
 
 /// Re-enumerates HID interfaces and probes only whitelisted ones.
