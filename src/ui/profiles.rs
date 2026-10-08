@@ -5,7 +5,7 @@
 use super::light;
 use super::text;
 use crate::app::{Profile, Snapshot, Status};
-use crate::profiles::{MAX_PROFILES, MouseProfile};
+use crate::profiles::MouseProfile;
 use crate::protocol::onboard::Action;
 
 /// Default mouse action of each button index (left, right, middle, back,
@@ -81,29 +81,6 @@ pub fn game_notice(snap: &Snapshot) -> Option<String> {
     Some(t)
 }
 
-/// Profiles shown per page of the list (decision of the user).
-pub const PAGE: usize = 5;
-
-pub fn page_count(n: usize) -> usize {
-    n.div_ceil(PAGE).max(1)
-}
-
-pub fn page_of(index: usize) -> usize {
-    index / PAGE
-}
-
-/// "Página 1 de 2".
-pub fn page_label(page: usize, n: usize) -> String {
-    format!("Página {} de {}", page + 1, page_count(n))
-}
-
-/// Profile of a program for its button: «Juego» or «No cambiar de perfil».
-pub fn program_profile(p: &crate::games::Program) -> String {
-    p.profile
-        .clone()
-        .unwrap_or_else(|| "No cambiar de perfil".into())
-}
-
 /// "El ratón tiene ajustes distintos de «Trabajo»: DPI al arrancar 3200 (en
 /// el perfil: 1000)."
 pub fn mismatch(snap: &Snapshot, p: &MouseProfile) -> Option<String> {
@@ -161,23 +138,11 @@ pub fn blocked(snap: &Snapshot, ghub: bool) -> Option<&'static str> {
     }
 }
 
-pub fn count(n: usize) -> String {
-    format!("{n} de {MAX_PROFILES}")
-}
-
 pub fn first_time(n: usize) -> &'static str {
     if n == 1 {
         "Crea otro perfil para cambiar rápido entre configuraciones, por ejemplo una para trabajar y otra para jugar."
     } else {
         ""
-    }
-}
-
-pub fn new_note(n: usize) -> String {
-    if n >= MAX_PROFILES {
-        format!("Has llegado a {MAX_PROFILES} perfiles. Elimina uno para crear otro.")
-    } else {
-        format!("Copia el perfil activo. Hasta {MAX_PROFILES} perfiles.")
     }
 }
 
@@ -274,8 +239,6 @@ mod tests {
             profiles,
             active_profile: Some(active.into()),
             programs: Vec::new(),
-            auto_switch: true,
-            ask_new: true,
             game: None,
             game_previous: None,
             unanswered: Vec::new(),
@@ -324,17 +287,6 @@ mod tests {
         );
         assert_eq!(tooltip_suffix(&s), " · perfil Trabajo");
         assert_eq!(tooltip_suffix(&snap(vec![profile("Solo")], "Solo")), "");
-    }
-
-    #[test]
-    fn pages_of_five() {
-        assert_eq!(page_count(0), 1);
-        assert_eq!(page_count(5), 1);
-        assert_eq!(page_count(6), 2);
-        assert_eq!(page_count(8), 2);
-        assert_eq!(page_of(4), 0);
-        assert_eq!(page_of(5), 1);
-        assert_eq!(page_label(1, 8), "Página 2 de 2");
     }
 
     #[test]

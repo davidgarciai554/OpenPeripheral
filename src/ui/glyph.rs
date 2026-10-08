@@ -351,3 +351,69 @@ pub fn check(c: &Canvas, x: f32, y: f32, color: Color) {
         c.line(pen, x + 6.0, y + 11.5, x + 13.0, y + 4.5);
     });
 }
+
+/// A mouse drawing of `super::mouse_art` at (x_px, y_px), `k` physical px
+/// per drawing unit; strokes are 1.6 px at `ui` scale (dpi / 96). Line
+/// drawing in the palette: body on `surface.card`, outline
+/// `text.secondary`, seams `border.control`, parts `text.tertiary`.
+pub fn mouse(
+    c: &mut Canvas,
+    x_px: f32,
+    y_px: f32,
+    k: f32,
+    ui: f32,
+    art: &super::mouse_art::Art,
+    p: &Palette,
+) {
+    use super::mouse_art::Seg;
+    let (ox, oy, sc) = (c.ox, c.oy, c.scale);
+    c.origin(x_px, y_px);
+    c.scale = k;
+    let w = |px: f32| px * ui / k;
+    let build = |c: &Canvas, segs: &[Seg]| {
+        let mut path = std::ptr::null_mut();
+        unsafe {
+            GdipCreatePath(FillModeAlternate, &mut path);
+            let mut at = (0.0, 0.0);
+            for s in segs {
+                match *s {
+                    Seg::M(x, y) => {
+                        GdipStartPathFigure(path);
+                        at = (x, y);
+                    }
+                    Seg::L(x, y) => {
+                        c.seg(path, at, (x, y));
+                        at = (x, y);
+                    }
+                    Seg::C(x1, y1, x2, y2, x, y) => {
+                        c.bez(path, at, (x1, y1), (x2, y2), (x, y));
+                        at = (x, y);
+                    }
+                    Seg::Z => {
+                        GdipClosePathFigure(path);
+                    }
+                }
+            }
+        }
+        path
+    };
+    let body = build(c, art.body);
+    c.with_brush(p.surface_card, |b| unsafe {
+        GdipFillPath(c.g, b, body);
+    });
+    c.with_pen(p.text_secondary, w(1.6), false, |pen| unsafe {
+        GdipDrawPath(c.g, pen, body);
+    });
+    unsafe { GdipDeletePath(body) };
+    let seams = build(c, art.seams);
+    c.with_pen(p.border_control, w(1.6), false, |pen| unsafe {
+        GdipDrawPath(c.g, pen, seams);
+    });
+    unsafe { GdipDeletePath(seams) };
+    for &(x, y, pw, ph, r) in art.parts {
+        c.fill_round_rect(x, y, pw, ph, r, p.bg_app);
+        c.stroke_round_rect(x, y, pw, ph, r, w(1.4), p.text_tertiary, false);
+    }
+    c.origin(ox, oy);
+    c.scale = sc;
+}

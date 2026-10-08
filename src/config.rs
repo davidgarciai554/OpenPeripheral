@@ -130,8 +130,74 @@ impl DeviceSettings {
     }
 }
 
+/// «Tema» in «Ajustes». High contrast always wins over it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    /// Follows the Windows app mode.
+    #[default]
+    Sistema,
+    Oscuro,
+    Claro,
+}
+
+fn is_system(t: &ThemeChoice) -> bool {
+    *t == ThemeChoice::Sistema
+}
+
+/// An unknown theme (a hand edit) falls back to «Sistema» instead of
+/// making the whole file unreadable.
+fn lenient_theme<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ThemeChoice, D::Error> {
+    let v = toml::Value::deserialize(d)?;
+    Ok(ThemeChoice::deserialize(v).unwrap_or_default())
+}
+
+/// App-wide settings («Ajustes»), not tied to a device or a profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct General {
+    /// «Cambiar de perfil al abrir los programas asociados», for every mouse.
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub auto_switch: bool,
+    /// «Preguntar al detectar un juego nuevo», for every mouse.
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub ask_new: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "is_system",
+        deserialize_with = "lenient_theme"
+    )]
+    pub theme: ThemeChoice,
+    /// Windows notifications of the app (new game, failed switches).
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub notifications: bool,
+    /// Notice about software that may overwrite the settings. G HUB keeps
+    /// blocking writes to the mouse even with the notice off.
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub conflict_notice: bool,
+}
+
+impl Default for General {
+    fn default() -> Self {
+        Self {
+            auto_switch: true,
+            ask_new: true,
+            theme: ThemeChoice::Sistema,
+            notifications: true,
+            conflict_notice: true,
+        }
+    }
+}
+
+impl General {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "General::is_default")]
+    pub general: General,
     #[serde(default)]
     pub devices: BTreeMap<String, DeviceSettings>,
 }
@@ -153,7 +219,33 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Option<Self> {
-        toml::from_str(text).ok()
+        let mut c: Self = toml::from_str(text).ok()?;
+        // Before 2026-10-08 the game switches were per mouse. Without a
+        // `[general]` table they come from the mice: off if any mouse had
+        // it off (decision of the user), so nothing turned off comes back.
+        let has_general = toml::from_str::<toml::Table>(text)
+            .ok()
+            .is_some_and(|t| t.contains_key("general"));
+        if !has_general {
+            c.general.auto_switch = c.devices.values().all(|s| s.auto_switch);
+            c.general.ask_new = c.devices.values().all(|s| s.ask_new);
+        }
+        Some(c)
+    }
+
+    /// The game switches are global; each mouse keeps a mirror so an older
+    /// version of the app reads the same values.
+    pub fn set_game_options(&mut self, auto_switch: bool, ask_new: bool) {
+        self.general.auto_switch = auto_switch;
+        self.general.ask_new = ask_new;
+        self.mirror_general();
+    }
+
+    fn mirror_general(&mut self) {
+        for s in self.devices.values_mut() {
+            s.auto_switch = self.general.auto_switch;
+            s.ask_new = self.general.ask_new;
+        }
     }
 
     pub fn settings_mut(&mut self, key: &DeviceKey) -> &mut DeviceSettings {
@@ -176,6 +268,7 @@ impl Config {
 
     pub fn to_text(&self) -> String {
         let mut c = self.clone();
+        c.mirror_general();
         c.devices.retain(|_, s| !s.is_empty());
         toml::to_string(&c).unwrap_or_default()
     }
@@ -405,12 +498,14 @@ mod tests {
             exe: r"g:\steamlibrary\steamapps\common\peak\peak.exe".into(),
             profile: Some("Juego".into()),
         }];
-        s.ask_new = false;
+        c.set_game_options(true, false);
         let text = c.to_text();
-        assert!(text.contains("ask_new = false") && !text.contains("auto_switch"));
+        assert!(text.contains("[general]\nask_new = false"), "{text}");
+        assert!(!text.contains("auto_switch"));
         assert_eq!(Config::parse(&text).unwrap(), c);
         // Defaults: both switches on; a device with only programs is kept.
         let d = Config::parse("[devices.k]\ndpi = 800\n").unwrap();
+        assert!(d.general.auto_switch && d.general.ask_new);
         assert!(d.devices["k"].auto_switch && d.devices["k"].ask_new);
         let mut only = Config::default();
         only.settings_mut(&key).programs = c.devices["k"].programs.clone();
@@ -420,6 +515,54 @@ mod tests {
         gone.settings_mut(&key).profiles.clear();
         gone.sanitize();
         assert_eq!(gone.devices["k"].programs[0].profile, None);
+    }
+
+    #[test]
+    fn per_mouse_game_switches_migrate_to_general() {
+        // Before 2026-10-08: per mouse. Off if any mouse had it off.
+        let old = "[devices.a]\ndpi = 800\nauto_switch = false\n[devices.b]\ndpi = 900\n";
+        let c = Config::parse(old).unwrap();
+        assert!(!c.general.auto_switch && c.general.ask_new);
+        // All on (or not written): on.
+        let c = Config::parse("[devices.a]\ndpi = 800\n[devices.b]\nask_new = true\n").unwrap();
+        assert!(c.general.auto_switch && c.general.ask_new);
+        // No mice: defaults.
+        assert_eq!(
+            Config::parse("[devices]\n").unwrap().general,
+            General::default()
+        );
+
+        // Saving mirrors the global values into every mouse, so an older
+        // version reads the same; the new version keeps the global.
+        let mut c = c;
+        c.set_game_options(false, true);
+        let text = c.to_text();
+        assert!(text.contains("[general]\nauto_switch = false\n"), "{text}");
+        assert_eq!(text.matches("auto_switch = false").count(), 3, "{text}");
+        let back = Config::parse(&text).unwrap();
+        assert!(!back.general.auto_switch);
+        assert!(back.devices.values().all(|s| !s.auto_switch && s.ask_new));
+
+        // `[general]` wins over the mirrors once it exists.
+        let edited = "[general]\nask_new = false\n[devices.a]\ndpi = 800\nauto_switch = false\n";
+        let c = Config::parse(edited).unwrap();
+        assert!(c.general.auto_switch && !c.general.ask_new);
+    }
+
+    #[test]
+    fn general_defaults_are_not_written_and_round_trip() {
+        let mut c = Config::default();
+        assert_eq!(c.to_text().trim(), "[devices]");
+        c.general.theme = ThemeChoice::Claro;
+        c.general.notifications = false;
+        c.general.conflict_notice = false;
+        let text = c.to_text();
+        assert!(text.contains("theme = \"claro\""), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        // An unknown theme falls back to «Sistema»; the rest still loads.
+        let c = Config::parse("[general]\ntheme = \"azul\"\nnotifications = false\n").unwrap();
+        assert_eq!(c.general.theme, ThemeChoice::Sistema);
+        assert!(!c.general.notifications);
     }
 
     #[test]

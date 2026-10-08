@@ -235,12 +235,18 @@ impl Ctx<'_> {
             let mut tm = TEXTMETRICW::default();
             let _ = GetTextMetricsW(self.hdc, &mut tm);
             let mut wcopy = w.clone();
-            DrawTextW(
-                self.hdc,
-                &mut wcopy,
-                &mut r,
-                DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
-            );
+            // DrawTextW must never get an empty slice (see `draw_shaped`);
+            // an empty text still measures one line, as before.
+            if !wcopy.is_empty() {
+                DrawTextW(
+                    self.hdc,
+                    &mut wcopy,
+                    &mut r,
+                    DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+                );
+            } else {
+                r.right = 0;
+            }
             SelectObject(self.hdc, old);
             let line = tm.tmHeight;
             let h = if lines > 0 {
@@ -856,7 +862,9 @@ pub fn paint(ctx: &Ctx, layout: &Layout, width: i32, height: i32) {
                 if lines > 0 {
                     flags |= DT_EDITCONTROL | DT_END_ELLIPSIS;
                 }
-                DrawTextW(ctx.hdc, &mut w, &mut r, flags);
+                if !w.is_empty() {
+                    DrawTextW(ctx.hdc, &mut w, &mut r, flags);
+                }
                 SelectObject(ctx.hdc, old);
             }
         }
@@ -892,6 +900,48 @@ pub fn draw_button(
     scale: f32,
     style: ButtonStyle,
 ) {
+    draw_shaped(
+        dis,
+        label,
+        bg,
+        palette,
+        fonts,
+        scale,
+        style,
+        Shape::default(),
+    );
+}
+
+/// Corner radius, dashed outline and a leading check mark (the profile
+/// pills of «Ajustes del ratón»).
+#[derive(Clone, Copy)]
+pub struct Shape {
+    pub radius: f32,
+    pub dashed: bool,
+    pub check: bool,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Self {
+            radius: 6.0,
+            dashed: false,
+            check: false,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_shaped(
+    dis: &DRAWITEMSTRUCT,
+    label: &str,
+    bg: Color,
+    palette: &Palette,
+    fonts: &Fonts,
+    scale: f32,
+    style: ButtonStyle,
+    shape: Shape,
+) {
     let r = dis.rcItem;
     let (w, h) = (r.right - r.left, r.bottom - r.top);
     unsafe {
@@ -925,7 +975,7 @@ pub fn draw_button(
                     } else {
                         bg
                     });
-            c.fill_round_rect(x, y, bw, bh, 6.0, face);
+            c.fill_round_rect(x, y, bw, bh, shape.radius, face);
             let border = if disabled {
                 palette.border_card
             } else if style == ButtonStyle::Normal {
@@ -933,18 +983,26 @@ pub fn draw_button(
             } else {
                 palette.text_primary
             };
-            c.stroke_round_rect(x, y, bw, bh, 6.0, 1.0, border, false);
+            c.stroke_round_rect(x, y, bw, bh, shape.radius, 1.0, border, shape.dashed);
             if focused {
                 c.stroke_round_rect(
                     x - 4.0,
                     y - 4.0,
                     bw + 8.0,
                     bh + 8.0,
-                    9.0,
+                    shape.radius + 3.0,
                     2.0,
                     palette.focus_ring,
                     false,
                 );
+            }
+            if shape.check {
+                let ink = if disabled {
+                    palette.text_disabled
+                } else {
+                    palette.text_primary
+                };
+                super::glyph::check(&c, x + 10.0, y + (bh - 16.0) / 2.0, ink);
             }
         }
         SetBkMode(mem, TRANSPARENT);
@@ -967,12 +1025,16 @@ pub fn draw_button(
             right: w,
             bottom: h,
         };
-        DrawTextW(
-            mem,
-            &mut t,
-            &mut tr,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
+        // An empty slice is a dangling pointer to DrawTextW: user32 reads it
+        // (a pill drawn before its profile name is known crashed the app).
+        if !t.is_empty() {
+            DrawTextW(
+                mem,
+                &mut t,
+                &mut tr,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
         SelectObject(mem, old_font);
         let _ = BitBlt(hdc, r.left, r.top, w, h, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
@@ -1106,7 +1168,7 @@ pub fn button_enabled(kind: &PanelKind, shared: &Shared) -> bool {
 /// Which panels the view shows, in order (pure; tested).
 pub fn panels_for(shared: &Shared) -> Vec<PanelKind> {
     let mut v = Vec::new();
-    if !shared.conflicts.is_empty() {
+    if !shared.conflicts.is_empty() && shared.general.conflict_notice {
         v.push(PanelKind::Notice);
     }
     if !shared.scanned {
@@ -1155,8 +1217,6 @@ mod tests {
             profiles: Vec::new(),
             active_profile: None,
             programs: Vec::new(),
-            auto_switch: true,
-            ask_new: true,
             game: None,
             game_previous: None,
             unanswered: Vec::new(),

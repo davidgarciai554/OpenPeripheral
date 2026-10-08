@@ -158,6 +158,8 @@ fn key_name(usage: u8) -> String {
         0x2a => "Retroceso".into(),
         0x2b => "Tab".into(),
         0x2c => "Espacio".into(),
+        0x37 => ".".into(),
+
         0x3a..=0x45 => format!("F{}", usage - 0x3a + 1),
         0x49 => "Insert".into(),
         0x4a => "Inicio".into(),
@@ -169,6 +171,10 @@ fn key_name(usage: u8) -> String {
         0x50 => "Flecha izquierda".into(),
         0x51 => "Flecha abajo".into(),
         0x52 => "Flecha arriba".into(),
+        // Numeric keypad: the same place on every keyboard layout.
+        0x56 => "- (teclado numérico)".into(),
+        0x57 => "+ (teclado numérico)".into(),
+        0x62 => "0 (teclado numérico)".into(),
         u => format!("Tecla 0x{u:02X}"),
     }
 }
@@ -393,8 +399,6 @@ mod tests {
             profiles: Vec::new(),
             active_profile: None,
             programs: Vec::new(),
-            auto_switch: true,
-            ask_new: true,
             game: None,
             game_previous: None,
             unanswered: Vec::new(),

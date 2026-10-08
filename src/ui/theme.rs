@@ -1,6 +1,8 @@
 //! Semantic colour tokens from `docs/design/DESIGN.md`, per theme, plus
 //! detection of the Windows app theme and high contrast mode.
 
+use crate::config::ThemeChoice;
+use std::sync::atomic::{AtomicU8, Ordering};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
@@ -200,15 +202,57 @@ fn apps_use_light_theme() -> bool {
     value != 0
 }
 
-/// Palette for the current system settings.
-pub fn current() -> Palette {
-    if high_contrast_on() {
-        Palette::high_contrast(|i| unsafe { GetSysColor(i) })
-    } else if apps_use_light_theme() {
-        LIGHT
-    } else {
-        DARK
+/// «Tema» chosen in «Ajustes» (0 = Sistema, 1 = Oscuro, 2 = Claro).
+static CHOICE: AtomicU8 = AtomicU8::new(0);
+
+/// Records the «Tema» of «Ajustes»; true if it changed.
+pub fn set_choice(choice: ThemeChoice) -> bool {
+    let v = match choice {
+        ThemeChoice::Sistema => 0,
+        ThemeChoice::Oscuro => 1,
+        ThemeChoice::Claro => 2,
+    };
+    CHOICE.swap(v, Ordering::Relaxed) != v
+}
+
+fn choice() -> ThemeChoice {
+    match CHOICE.load(Ordering::Relaxed) {
+        1 => ThemeChoice::Oscuro,
+        2 => ThemeChoice::Claro,
+        _ => ThemeChoice::Sistema,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    HighContrast,
+    Light,
+    Dark,
+}
+
+/// High contrast always wins; then the choice; «Sistema» follows Windows.
+fn pick(choice: ThemeChoice, high_contrast: bool, system_light: impl FnOnce() -> bool) -> Pick {
+    match choice {
+        _ if high_contrast => Pick::HighContrast,
+        ThemeChoice::Oscuro => Pick::Dark,
+        ThemeChoice::Claro => Pick::Light,
+        ThemeChoice::Sistema if system_light() => Pick::Light,
+        ThemeChoice::Sistema => Pick::Dark,
+    }
+}
+
+/// Palette for the current settings.
+pub fn current() -> Palette {
+    match pick(choice(), high_contrast_on(), apps_use_light_theme) {
+        Pick::HighContrast => Palette::high_contrast(|i| unsafe { GetSysColor(i) }),
+        Pick::Light => LIGHT,
+        Pick::Dark => DARK,
+    }
+}
+
+/// Whether Windows is in light app mode («Sistema · ahora claro»).
+pub fn system_is_light() -> bool {
+    apps_use_light_theme()
 }
 
 /// Matches the title bar to the palette (documented DWM attribute).
@@ -243,6 +287,21 @@ mod tests {
     fn contrast(a: Color, b: Color) -> f64 {
         let (x, y) = (luminance(a), luminance(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn theme_choice_and_high_contrast() {
+        use ThemeChoice::*;
+        // High contrast always wins.
+        for c in [Sistema, Oscuro, Claro] {
+            assert_eq!(pick(c, true, || true), Pick::HighContrast);
+        }
+        // A forced theme ignores Windows (never even asks it).
+        assert_eq!(pick(Oscuro, false, || unreachable!()), Pick::Dark);
+        assert_eq!(pick(Claro, false, || unreachable!()), Pick::Light);
+        // «Sistema» follows the app mode.
+        assert_eq!(pick(Sistema, false, || true), Pick::Light);
+        assert_eq!(pick(Sistema, false, || false), Pick::Dark);
     }
 
     #[test]

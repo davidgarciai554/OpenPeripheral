@@ -84,9 +84,8 @@ pub enum Command {
     /// associated with it (decision of the user, 2026-10-07).
     CreateGameProfile(DeviceKey, String, String),
     RemoveProgram(DeviceKey, String),
-    /// «Cambiar de perfil al abrir estos programas», «Preguntar al detectar
-    /// un juego nuevo».
-    SetGameOptions(DeviceKey, bool, bool),
+    /// The app-wide settings of «Ajustes» (saved at once).
+    SetGeneral(crate::config::General),
     /// The settings page has button changes not saved yet: automatic
     /// switches must not write over them.
     PageEdits(DeviceKey, bool),
@@ -226,10 +225,8 @@ pub struct Snapshot {
     /// Profiles saved on this PC for this model, and the active one.
     pub profiles: Vec<MouseProfile>,
     pub active_profile: Option<String>,
-    /// Profiles per game: associated programs and the two switches.
+    /// Programs associated with a profile (the switches are in `general`).
     pub programs: Vec<Program>,
-    pub auto_switch: bool,
-    pub ask_new: bool,
     /// The game whose profile is in use (display name) and the profile the
     /// mouse goes back to when it closes.
     pub game: Option<String>,
@@ -266,6 +263,8 @@ pub struct Shared {
     /// incremented with each (shown in the page and as a notification).
     pub autos: u64,
     pub auto_result: Option<Message>,
+    /// «Ajustes» (app-wide), from the config.
+    pub general: crate::config::General,
 }
 
 struct Entry {
@@ -770,12 +769,12 @@ impl Worker {
                         ))
                     });
                 }
-                Ok(Command::SetGameOptions(key, auto, ask)) => {
-                    let s = self.config.settings_mut(&key);
-                    s.auto_switch = auto;
-                    s.ask_new = ask;
+                Ok(Command::SetGeneral(g)) => {
+                    let auto = g.auto_switch;
+                    self.config.set_game_options(g.auto_switch, g.ask_new);
+                    self.config.general = g;
                     if !auto {
-                        self.pending.remove(&key.0);
+                        self.pending.clear();
                     }
                     self.save_config();
                     self.publish(None);
@@ -898,7 +897,8 @@ impl Worker {
                     game: is_game && !asked,
                 },
             };
-            let (active, auto, ask) = (s.active.clone(), s.auto_switch, s.ask_new);
+            let g = &self.config.general;
+            let (active, auto, ask) = (s.active.clone(), g.auto_switch, g.ask_new);
             let action = self.games.entry(key.0.clone()).or_default().opened(
                 pid,
                 &exe,
@@ -1002,7 +1002,7 @@ impl Worker {
                 continue;
             };
             // Something else happened meanwhile: nothing to write.
-            if !s.auto_switch
+            if !self.config.general.auto_switch
                 || s.active.as_deref() != Some(name.as_str())
                 || pid.is_some_and(|p| !self.games.get(&k).is_some_and(|g| g.is_open(p)))
             {
@@ -1189,8 +1189,6 @@ impl Worker {
                     profiles: saved.map(|c| c.profiles.clone()).unwrap_or_default(),
                     active_profile: saved.and_then(|c| c.active.clone()),
                     programs: saved.map(|c| c.programs.clone()).unwrap_or_default(),
-                    auto_switch: saved.is_none_or(|c| c.auto_switch),
-                    ask_new: saved.is_none_or(|c| c.ask_new),
                     game: self.games.get(&key.0).and_then(|g| g.game()),
                     game_previous: self
                         .games
@@ -1207,6 +1205,7 @@ impl Worker {
             })
             .collect();
         s.conflicts = (self.conflicts)();
+        s.general = self.config.general.clone();
         s.scanned = true;
         s.hid_available = self.api.is_some();
         if message.is_some() {
@@ -1276,8 +1275,6 @@ impl Worker {
                     profiles: Vec::new(),
                     active_profile: None,
                     programs: Vec::new(),
-                    auto_switch: true,
-                    ask_new: true,
                     game: None,
                     game_previous: None,
                     unanswered: Vec::new(),
@@ -1671,8 +1668,6 @@ mod tests {
                 profiles: Vec::new(),
                 active_profile: None,
                 programs: Vec::new(),
-                auto_switch: true,
-                ask_new: true,
                 game: None,
                 game_previous: None,
                 unanswered: Vec::new(),

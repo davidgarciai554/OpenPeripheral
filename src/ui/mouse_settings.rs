@@ -18,10 +18,10 @@ use crate::protocol::onboard::{Action, Light, ProfileEdits};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::SystemServices::{SS_LEFT, SS_NOPREFIX};
-use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETSEL, SetWindowTheme};
+use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETSEL, ODT_LISTBOX};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VIRTUAL_KEY, VK_CONTROL,
-    VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_TAB,
+    VK_ESCAPE, VK_LBUTTON, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -35,7 +35,6 @@ const ID_PCT: i32 = 303;
 const ID_PSTATE: i32 = 304;
 const ID_DISC: i32 = 305;
 const ID_NOTICE: i32 = 306;
-const ID_PAGE_NOTE: i32 = 307;
 const ID_DPI_TITLE: i32 = 310;
 const ID_DPI_DESC: i32 = 311;
 const ID_DPI_CURRENT: i32 = 312;
@@ -48,43 +47,70 @@ const ID_PRESETS_LABEL: i32 = 318;
 const ID_DPI_BADGE: i32 = 319;
 const ID_PRESET0: i32 = 320; // ..=323
 const ID_DPI_STATUS: i32 = 324;
-const ID_BTN_TITLE: i32 = 360;
-const ID_BTN_DESC: i32 = 361;
+/// «ACTUAL»: the DPI the sensor uses now (it may be one being tried).
+const ID_DPI_NOW_LABEL: i32 = 325;
+const ID_DPI_NOW: i32 = 326;
+// «Botones y DPI» (revisión 2026-10-08): reading the profile, a point per
+// button on the drawing with its label (name and action), the list of
+// buttons of a narrow window, and the hint under the drawing.
 const ID_BTN_STATUS: i32 = 362;
-const ID_BTN_NAME0: i32 = 370; // ..=375
-const ID_BTN_ACT0: i32 = 380; // ..=385
-const ID_BTN_LOCK: i32 = 386;
-const ID_BTN_BACKUP: i32 = 387;
-/// Rows created for the buttons table (the G305 declares 6).
-const MAX_BUTTONS: i32 = 6;
-const ID_BTN_BADGE0: i32 = 390; // ..=395
-const ID_BTN_CHANGE0: i32 = 400; // ..=405
-// Row editor (moved in tab order right after the row being edited).
-const ID_ED_LABEL: i32 = 410;
-const ID_ED_COMBO: i32 = 411;
-const ID_ED_KEY_LABEL: i32 = 412;
-const ID_ED_KEY: i32 = 413;
-const ID_ED_KEY_CLEAR: i32 = 414;
-const ID_ED_KEY_HELP: i32 = 415;
-const ID_ED_OK: i32 = 416;
-const ID_ED_CANCEL: i32 = 417;
-const EDITOR: [i32; 8] = [
-    ID_ED_LABEL,
-    ID_ED_COMBO,
-    ID_ED_KEY_LABEL,
-    ID_ED_KEY,
-    ID_ED_KEY_CLEAR,
-    ID_ED_KEY_HELP,
-    ID_ED_OK,
-    ID_ED_CANCEL,
+const ID_BTN_HINT: i32 = 363;
+/// Buttons shown: the G305 declares 6; the generic drawing has 8 points.
+const MAX_BUTTONS: i32 = 8;
+const ID_DOT0: i32 = 1100; // ..=1107
+const ID_LBL_NAME0: i32 = 1110; // ..=1117
+const ID_LBL_ACT0: i32 = 1120; // ..=1127
+const ID_ROW0: i32 = 1130; // ..=1137
+// «Asignaciones»: what the chosen button does, in three tabs.
+const ID_AS_TITLE: i32 = 1140;
+const ID_AS_FOR: i32 = 1141;
+const ID_AS_TAB0: i32 = 1142; // ..=1144
+const ID_AS_LOCK: i32 = 1145;
+const ID_AS_SEARCH_LABEL: i32 = 1146;
+const ID_AS_SEARCH: i32 = 1147;
+const ID_AS_COUNT: i32 = 1148;
+const ID_AS_LIST: i32 = 1149;
+const ID_AS_NOTE: i32 = 1150;
+const ID_AS_KEY_LABEL: i32 = 1151;
+const ID_AS_KEY: i32 = 1152;
+const ID_AS_KEY_HELP: i32 = 1153;
+const ID_AS_KEY_ASSIGN: i32 = 1154;
+const ID_AS_KEY_CLEAR: i32 = 1155;
+const ID_AS_MOUSE0: i32 = 1160; // ..=1164
+const ID_BTN_LAST: i32 = 1164;
+
+/// Tabs of «Asignaciones».
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+enum AsTab {
+    #[default]
+    Commands,
+    Keys,
+    Mouse,
+}
+
+const AS_TABS: [(AsTab, &str); 3] = [
+    (AsTab::Commands, "Comandos"),
+    (AsTab::Keys, "Teclas"),
+    (AsTab::Mouse, "Ratón"),
 ];
+
+/// «Ratón»: the clicks this app can write.
+const MOUSE_ACTIONS: [u16; 5] = [0x01, 0x02, 0x04, 0x08, 0x10];
+
+/// What the page shows of a button: its name, its action (pending or in
+/// the mouse), the action it replaces and whether it cannot be changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ButtonRow {
+    name: String,
+    action: String,
+    before: Option<String>,
+    locked: bool,
+}
 const ID_BAR_TEXT: i32 = 420;
 const ID_BAR_DISCARD: i32 = 421;
 const ID_BAR_SAVE: i32 = 422;
 const ID_SAVE_STATUS: i32 = 423;
 const ID_WRITE_LOCK: i32 = 424;
-const ID_PROFILE_RESTORE: i32 = 425;
-const ID_FACTORY: i32 = 426;
 // Light section.
 const ID_LIGHT_TITLE: i32 = 430;
 const ID_LIGHT_BADGE: i32 = 431;
@@ -102,56 +128,63 @@ const ID_LIGHT_NOTE: i32 = 455;
 const ID_LIGHT_TRY: i32 = 456;
 const ID_LIGHT_SAVED: i32 = 457;
 const ID_LIGHT_STATUS: i32 = 458;
-const ID_PROFILE_TITLE: i32 = 460;
-const ID_RATE_TITLE: i32 = 330;
-const ID_RATE_VALUE: i32 = 331;
-const ID_RATE_RO: i32 = 332;
-const ID_RATE_DESC: i32 = 333;
-const ID_RST_DESC: i32 = 341;
-const ID_RST_BTN: i32 = 342;
+/// Result of «Restaurar originales» (in the «Perfil …» menu).
 const ID_RST_STATUS: i32 = 343;
-// Profiles section (plan `perfiles-raton`). Per row: name, summary and its
-// buttons, in tab order.
-const ID_PRF_TITLE: i32 = 470;
-const ID_PRF_COUNT: i32 = 471;
+// Profiles (revisión 2026-10-08): «PERFILES», a pill per profile, «+ Nuevo»,
+// «Perfil …» and the notices below them, in tab order.
+const ID_PRF_LABEL: i32 = 461;
+const ID_PRF_MENU: i32 = 462;
+const ID_PRF_HINT: i32 = 463;
 const ID_PRF_MISMATCH: i32 = 472;
 const ID_PRF_REAPPLY: i32 = 473;
 const ID_PRF_SAVEAS: i32 = 474;
-const ID_PRF_ACTIVE: i32 = 475;
 const ID_PRF_FIRST: i32 = 476;
 const ID_PRF_NEW: i32 = 477;
-const ID_PRF_NOTE: i32 = 478;
 const ID_PRF_STATUS: i32 = 479;
-const ID_PRF_NAME0: i32 = 480; // ..=487
-const ID_PRF_SUM0: i32 = 490; // ..=497
-const ID_PRF_USE0: i32 = 500; // ..=507
-const ID_PRF_DEL0: i32 = 510; // ..=517
-const ID_PRF_REN0: i32 = 520; // ..=527
+const ID_PILL0: i32 = 480; // ..=487
 const MAX_ROWS: i32 = crate::profiles::MAX_PROFILES as i32;
 const ID_PRF_GAME: i32 = 528;
-const ID_PRF_PREV: i32 = 529;
-const ID_PRF_PAGE: i32 = 530;
-const ID_PRF_NEXT: i32 = 531;
-// «Juegos y programas» (plan `perfiles-por-juego`).
+/// Tabs of the page.
+const ID_TAB0: i32 = 490; // ..=492
+// «Avanzado»: the programs linked to the active profile.
 const ID_GAM_TITLE: i32 = 600;
 const ID_GAM_DESC: i32 = 601;
-const ID_GAM_AUTO: i32 = 602;
-const ID_GAM_ASK: i32 = 603;
-const ID_GAM_ASK_HELP: i32 = 604;
-const ID_GAM_NEW_TITLE: i32 = 605;
+const ID_GAM_FOOT: i32 = 604;
 const ID_GAM_EMPTY: i32 = 606;
 const ID_GAM_ADD: i32 = 607;
-const ID_GAM_UNREG: i32 = 608;
 const ID_GAM_STATUS: i32 = 609;
-const ID_GAM_NEW0: i32 = 610; // ..=617 games not answered
-const ID_GAM_CFG0: i32 = 620; // ..=627
-const ID_GAM_NEVER0: i32 = 630; // ..=637
-const MAX_NEW: i32 = 8;
 const ID_GAM_NAME0: i32 = 700; // ..=763 programs
 const ID_GAM_PATH0: i32 = 800;
-const ID_GAM_SEL0: i32 = 900;
 const ID_GAM_DEL0: i32 = 1000;
 const MAX_PROGS: i32 = crate::games::MAX_PROGRAMS as i32;
+const ID_GAM_LAST: i32 = ID_GAM_DEL0 + MAX_PROGS - 1;
+
+/// Tabs of the page (DESIGN.md, revisión 2026-10-08).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(crate) enum Tab {
+    #[default]
+    Buttons,
+    Light,
+    Advanced,
+}
+
+const TABS: [(Tab, &str); 3] = [
+    (Tab::Buttons, "Botones y DPI"),
+    (Tab::Light, "Iluminación"),
+    (Tab::Advanced, "Avanzado"),
+];
+
+/// The tab a control belongs to; `None`: it shows in every tab.
+fn tab_of(id: i32) -> Option<Tab> {
+    match id {
+        ID_DPI_TITLE..=ID_DPI_NOW | ID_BTN_STATUS..=ID_BTN_HINT | ID_DOT0..=ID_BTN_LAST => {
+            Some(Tab::Buttons)
+        }
+        ID_LIGHT_TITLE..=ID_LIGHT_STATUS => Some(Tab::Light),
+        ID_GAM_TITLE..=ID_GAM_LAST => Some(Tab::Advanced),
+        _ => None,
+    }
+}
 
 /// Controls that live in the fixed bar at the bottom of the window.
 const BAR: [i32; 4] = [ID_BAR_TEXT, ID_BAR_DISCARD, ID_BAR_SAVE, ID_SAVE_STATUS];
@@ -177,7 +210,6 @@ enum Role {
     Title,
     Name,
     Percent,
-    Primary,
     Secondary,
     Tertiary,
     Notice,
@@ -189,8 +221,6 @@ enum Role {
 enum Surface {
     App,
     Card,
-    /// Row being edited (`surface.selected`).
-    Selected,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -198,9 +228,8 @@ enum Kind {
     Text(Role, Surface),
     Button(ButtonStyle, Surface),
     Edit,
-    Combo,
-    /// Native check box (classic look, so it takes the theme's colours).
-    Check(Surface),
+    /// The «Comandos» list box (owner-drawn rows).
+    List,
 }
 
 #[derive(Clone, Copy)]
@@ -235,16 +264,6 @@ enum Write {
     Use,
 }
 
-/// The row editor ("Cambiar").
-#[derive(Clone)]
-struct Editing {
-    row: usize,
-    choices: Vec<(String, Option<Action>)>,
-    selected: usize,
-    /// Captured shortcut (HID modifiers, usage).
-    key: Option<(u8, u8)>,
-}
-
 pub(crate) struct MouseState {
     pub key: DeviceKey,
     ctls: Vec<Ctl>,
@@ -261,21 +280,34 @@ pub(crate) struct MouseState {
     applied: Option<(bool, u16)>,
     restore_text: Option<(bool, String)>,
     brushes: Option<(Palette, HBRUSH, HBRUSH, HBRUSH)>,
-    /// Row separators of the buttons table: (x1, x2, y) in content px.
+    /// Separators: (x1, x2, y) in content px.
     separators: Vec<(i32, i32, i32)>,
     profile_requested: bool,
     /// Button changes not yet written: (index, new action), by index.
     edits: Vec<(usize, Action)>,
-    editing: Option<Editing>,
     /// Outcome of the last write: (ok, text).
     buttons_result: Option<(bool, String)>,
-    /// Painted outlines: "Cambiado" labels, the editor box, the key field.
+    /// Painted outlines: the "Cambiado" labels.
     badges: Vec<RECT>,
-    edit_box: Option<RECT>,
-    key_field: Option<RECT>,
+    /// Fields painted behind their EDIT (search and shortcut): `bg.app`
+    /// with a `border.control` outline.
+    boxes: Vec<RECT>,
     save_icon: Option<(i32, i32, bool)>,
-    /// Whether the combo box got the dark theme.
-    dark_combo: Option<bool>,
+    /// «Botones y DPI»: the chosen button (profile order), the rows shown
+    /// for the buttons, the tab of «Asignaciones», the shortcut captured in
+    /// «Teclas», the «Comandos» list (rows and the search they come from),
+    /// the leader lines (x1, y1, x2, y2) and the drawing (x, y, px per
+    /// unit).
+    sel: usize,
+    /// Whether `sel` was chosen (by the user or once the buttons were read).
+    sel_set: bool,
+    button_rows: Vec<ButtonRow>,
+    as_tab: AsTab,
+    as_key: Option<(u8, u8)>,
+    list_rows: Vec<Option<usize>>,
+    list_query: Option<String>,
+    leaders: Vec<(i32, i32, i32, i32)>,
+    art: Option<(i32, i32, f32, &'static super::mouse_art::Art)>,
     /// Light picked in the section; `None` until the profile is read.
     pick: Option<Pick>,
     /// Outcome of the last light "Probar".
@@ -294,23 +326,23 @@ pub(crate) struct MouseState {
     pub(crate) bar_h: i32,
     preview: Option<RECT>,
     light_icon: Option<(i32, i32, bool)>,
-    /// Profiles: painted rows (box, active), the check before «Activo», the
-    /// status icon, the last result, the profile being used and the one it
-    /// replaces, a profile to use once a save ends, and whether the focus
-    /// goes to the new active row.
+    /// Painted rows of «Avanzado»; profiles: the status icon, the last
+    /// result, the profile being used and the one it replaces, a profile to
+    /// use once a save ends, and whether the focus goes to the new active
+    /// pill.
     rows: Vec<(RECT, bool)>,
-    active_check: Option<(i32, i32)>,
     profile_icon: Option<(i32, i32, bool)>,
     profile_status: Option<(bool, String)>,
     using: Option<(String, String)>,
     then_use: Option<String>,
     focus_active: bool,
-    /// Page of the profiles list chosen with the arrows (`None`: the page of
-    /// the active profile) and the one shown.
-    page: Option<usize>,
-    page_shown: usize,
-    /// «Juegos y programas»: last result, automatic results already seen,
-    /// and whether the worker knows about unsaved button changes.
+    /// Profile pills, in order: (name, active).
+    pills: Vec<(String, bool)>,
+    /// The tab shown, and the controls hidden on purpose in any tab.
+    tab: Tab,
+    hidden: Vec<i32>,
+    /// «Avanzado»: last result, automatic results already seen, and whether
+    /// the worker knows about unsaved button changes.
     games_status: Option<(bool, String)>,
     autos_seen: u64,
     page_edits_sent: bool,
@@ -503,35 +535,45 @@ fn editing_available() -> bool {
     crate::app::WRITES_ENABLED || cfg!(debug_assertions)
 }
 
-/// Choices of the "Acción" selector. `None` is "Atajo de teclado…". Only
-/// encodings observed on a real mouse are offered (no double click,
-/// multimedia or "Desactivar" yet). A profile function the app cannot
-/// write is kept as "Sin cambios".
-pub fn choices(device: Action) -> Vec<(String, Option<Action>)> {
-    let mut v: Vec<(String, Option<Action>)> = [0x01u16, 0x02, 0x04, 0x08, 0x10]
-        .iter()
-        .map(|&m| {
-            let a = Action::Mouse(m);
-            (format!("Clics y navegación: {}", text::action(a)), Some(a))
-        })
-        .collect();
-    v.push(("Otras: Atajo de teclado…".into(), None));
-    if !crate::protocol::onboard::assignable(device) && !matches!(device, Action::Keyboard { .. }) {
-        v.push((
-            format!("Sin cambios: {}", text::action(device)),
-            Some(device),
-        ));
-    }
-    v
+/// A button that cannot be changed: the left one (a click must remain) and
+/// a profile function this app cannot write, e.g. the DPI cycle of the
+/// G305's DPI button.
+pub fn locked(row: usize, device: Action) -> bool {
+    row == 0 || matches!(device, Action::Raw(_))
 }
 
-/// Index of `current` in `choices` (shortcuts select "Atajo de teclado…").
-pub fn choice_for(choices: &[(String, Option<Action>)], current: Action) -> usize {
-    let wanted = match current {
-        Action::Keyboard { .. } => None,
-        a => Some(a),
-    };
-    choices.iter().position(|(_, a)| *a == wanted).unwrap_or(0)
+/// The page's rows of buttons from the mouse's buttons and the pending
+/// changes (pure; tested).
+fn button_rows(buttons: &[Action], edits: &[(usize, Action)]) -> Vec<ButtonRow> {
+    buttons
+        .iter()
+        .enumerate()
+        .map(|(row, &device)| {
+            let new = edits.iter().find(|(r, _)| *r == row).map(|(_, a)| *a);
+            ButtonRow {
+                name: text::mouse_button(row),
+                action: text::action(new.unwrap_or(device)),
+                before: new.map(|_| text::action(device)),
+                locked: locked(row, device),
+            }
+        })
+        .collect()
+}
+
+/// Rows of the «Comandos» list: a group header (`None`) before each group's
+/// commands (`Some(index)`), for the commands matching `query`.
+fn command_rows(query: &str) -> Vec<Option<usize>> {
+    let mut rows = Vec::new();
+    let mut group = "";
+    for i in super::commands::filter(query) {
+        let c = &super::commands::COMMANDS[i];
+        if c.group != group {
+            rows.push(None);
+            group = c.group;
+        }
+        rows.push(Some(i));
+    }
+    rows
 }
 
 /// Records `action` for `row`; choosing what the mouse already has
@@ -569,14 +611,15 @@ fn vk_usage(vk: u16) -> Option<u8> {
 }
 
 /// Shortcut captured from a key press: (HID modifiers, usage). Tab and Esc
-/// are never captured (they leave the field); lone modifiers and keys
-/// without a name are ignored.
+/// are never captured (they leave the field), nor anything with the Windows
+/// key (decision of the user, 2026-10-08: Windows acts on it itself); lone
+/// modifiers and keys without a name are ignored.
 pub fn capture(vk: u16, ctrl: bool, shift: bool, alt: bool, win: bool) -> Option<(u8, u8)> {
-    if vk == VK_TAB.0 || vk == VK_ESCAPE.0 {
+    if vk == VK_TAB.0 || vk == VK_ESCAPE.0 || win {
         return None;
     }
     let usage = vk_usage(vk)?;
-    let mods = ctrl as u8 | (shift as u8) << 1 | (alt as u8) << 2 | (win as u8) << 3;
+    let mods = ctrl as u8 | (shift as u8) << 1 | (alt as u8) << 2;
     Some((mods, usage))
 }
 
@@ -763,90 +806,212 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
     add(ID_PSTATE, Kind::Text(Secondary, App), s, "", st);
     add(ID_DISC, Kind::Text(Notice, App), s, "", st);
     add(ID_NOTICE, Kind::Text(Notice, App), s, "", st);
+    add(ID_PRF_LABEL, Kind::Text(Tertiary, App), s, "PERFILES", st);
+    for i in 0..MAX_ROWS {
+        add(
+            ID_PILL0 + i,
+            Kind::Button(ButtonStyle::Normal, App),
+            b,
+            "",
+            btn,
+        );
+    }
     add(
-        ID_PAGE_NOTE,
-        Kind::Text(Secondary, App),
-        s,
-        "OpenPeripheral aplica tu DPI y tu luz al iniciarse o al conectar el ratón. «Guardar en el ratón…» los conserva también sin la app y en otros PC. «Probar» lo envía al ratón sin guardarlo.",
-        st,
+        ID_PRF_NEW,
+        Kind::Button(ButtonStyle::Normal, App),
+        b,
+        "Nuevo perfil…",
+        btn,
     );
-    add(ID_PRF_TITLE, Kind::Text(Name, Card), s, "Perfiles", st);
-    add(ID_PRF_COUNT, Kind::Text(Tertiary, Card), s, "", st);
-    add(ID_PRF_GAME, Kind::Text(Notice, Card), s, "", st);
-    add(ID_PRF_MISMATCH, Kind::Text(Notice, Card), s, "", st);
+    add(
+        ID_PRF_MENU,
+        Kind::Button(ButtonStyle::Normal, App),
+        b,
+        "Opciones del perfil",
+        btn,
+    );
+    add(ID_PRF_HINT, Kind::Text(Secondary, App), s, "", st);
+    add(ID_PRF_GAME, Kind::Text(Notice, App), s, "", st);
+    add(ID_PRF_FIRST, Kind::Text(Secondary, App), s, "", st);
+    add(ID_WRITE_LOCK, Kind::Text(Notice, App), s, "", st);
+    add(ID_RST_STATUS, Kind::Text(Secondary, App), s, "", st);
+    add(ID_PRF_MISMATCH, Kind::Text(Notice, App), s, "", st);
     add(
         ID_PRF_REAPPLY,
-        Kind::Button(ButtonStyle::Primary, Card),
+        Kind::Button(ButtonStyle::Primary, App),
         b,
         "Volver a aplicar",
         btn,
     );
     add(
         ID_PRF_SAVEAS,
-        Kind::Button(ButtonStyle::Normal, Card),
+        Kind::Button(ButtonStyle::Normal, App),
         b,
         "Guardar como perfil nuevo…",
         btn,
     );
-    add(ID_PRF_ACTIVE, Kind::Text(Strong, Selected), s, "", st);
-    for i in 0..MAX_ROWS {
-        add(ID_PRF_NAME0 + i, Kind::Text(Strong, Card), s, "", st);
-        add(ID_PRF_SUM0 + i, Kind::Text(Secondary, Card), s, "", st);
+    add(ID_PRF_STATUS, Kind::Text(Secondary, App), s, "", st);
+    // Tabs: one Tab stop (the chosen one) and the arrows move inside; the
+    // next control starts a new group.
+    for (i, (_, label)) in TABS.iter().enumerate() {
+        let style = (BS_OWNERDRAW | BS_NOTIFY) as u32 | if i == 0 { WS_GROUP.0 } else { 0 };
         add(
-            ID_PRF_USE0 + i,
-            Kind::Button(ButtonStyle::Primary, Card),
+            ID_TAB0 + i as i32,
+            Kind::Button(ButtonStyle::Normal, App),
             b,
-            "Usar",
-            btn,
+            label,
+            style,
         );
+    }
+    // «Botones y DPI», in tab order: «Asignaciones», the points of the
+    // drawing (or the list of a narrow window), then the DPI.
+    add(
+        ID_AS_TITLE,
+        Kind::Text(Name, Card),
+        s,
+        "Asignaciones",
+        st | WS_GROUP.0,
+    );
+    add(ID_AS_FOR, Kind::Text(Secondary, Card), s, "", st);
+    for (i, (_, label)) in AS_TABS.iter().enumerate() {
+        let style = (BS_OWNERDRAW | BS_NOTIFY) as u32 | if i == 0 { WS_GROUP.0 } else { 0 };
         add(
-            ID_PRF_DEL0 + i,
+            ID_AS_TAB0 + i as i32,
             Kind::Button(ButtonStyle::Normal, Card),
             b,
-            "Eliminar…",
-            btn,
+            label,
+            style,
         );
+    }
+    add(ID_AS_LOCK, Kind::Text(Notice, Card), s, "", st | WS_GROUP.0);
+    // A label directly before a field becomes its accessible name.
+    add(
+        ID_AS_SEARCH_LABEL,
+        Kind::Text(Notice, Card),
+        s,
+        "Buscar un comando",
+        st,
+    );
+    add(
+        ID_AS_SEARCH,
+        Kind::Edit,
+        w!("EDIT"),
+        "",
+        WS_TABSTOP.0 | ES_AUTOHSCROLL as u32,
+    );
+    add(ID_AS_COUNT, Kind::Text(Tertiary, Card), s, "", st);
+    add(
+        ID_AS_LIST,
+        Kind::List,
+        w!("LISTBOX"),
+        "",
+        WS_TABSTOP.0
+            | WS_VSCROLL.0
+            | (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
+    );
+    add(
+        ID_AS_NOTE,
+        Kind::Text(Tertiary, Card),
+        s,
+        "Los atajos con la tecla Windows están en el grupo «Windows»; en «Teclas» no se pueden escribir.",
+        st,
+    );
+    add(
+        ID_AS_KEY_LABEL,
+        Kind::Text(Notice, Card),
+        s,
+        "Combinación de teclas",
+        st,
+    );
+    add(
+        ID_AS_KEY,
+        Kind::Edit,
+        w!("EDIT"),
+        "",
+        WS_TABSTOP.0 | (ES_READONLY | ES_CENTER | ES_AUTOHSCROLL) as u32,
+    );
+    add(
+        ID_AS_KEY_HELP,
+        Kind::Text(Secondary, Card),
+        s,
+        "Con el campo seleccionado, pulsa la combinación. Tab y Esc no se capturan: sirven para salir del campo. Tampoco la tecla Windows.",
+        st,
+    );
+    add(
+        ID_AS_KEY_ASSIGN,
+        Kind::Button(ButtonStyle::Primary, Card),
+        b,
+        "Asignar el atajo",
+        btn,
+    );
+    add(
+        ID_AS_KEY_CLEAR,
+        Kind::Button(ButtonStyle::Normal, Card),
+        b,
+        "Borrar el atajo",
+        btn,
+    );
+    for (i, &mask) in MOUSE_ACTIONS.iter().enumerate() {
         add(
-            ID_PRF_REN0 + i,
-            Kind::Button(ButtonStyle::Normal, Selected),
+            ID_AS_MOUSE0 + i as i32,
+            Kind::Button(ButtonStyle::Normal, Card),
             b,
-            "Renombrar…",
+            &text::action(Action::Mouse(mask)),
             btn,
         );
     }
     add(
-        ID_PRF_PREV,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Página anterior de perfiles",
-        btn,
+        ID_BTN_STATUS,
+        Kind::Text(Notice, App),
+        s,
+        "",
+        st | WS_GROUP.0,
     );
-    add(ID_PRF_PAGE, Kind::Text(Secondary, Card), s, "", st);
+    for i in 0..MAX_BUTTONS {
+        add(
+            ID_DOT0 + i,
+            Kind::Button(ButtonStyle::Normal, App),
+            b,
+            "",
+            btn,
+        );
+    }
+    for i in 0..MAX_BUTTONS {
+        add(
+            ID_ROW0 + i,
+            Kind::Button(ButtonStyle::Normal, App),
+            b,
+            "",
+            btn,
+        );
+    }
+    for i in 0..MAX_BUTTONS {
+        add(ID_LBL_NAME0 + i, Kind::Text(Tertiary, App), s, "", st);
+        add(ID_LBL_ACT0 + i, Kind::Text(Strong, App), s, "", st);
+    }
     add(
-        ID_PRF_NEXT,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Página siguiente de perfiles",
-        btn,
+        ID_BTN_HINT,
+        Kind::Text(Secondary, App),
+        s,
+        "Pulsa un punto del ratón y elige su acción en «Asignaciones». Lo que cambies queda pendiente hasta que lo guardes.",
+        st,
     );
-    add(ID_PRF_FIRST, Kind::Text(Secondary, Card), s, "", st);
-    add(
-        ID_PRF_NEW,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Nuevo perfil…",
-        btn,
-    );
-    add(ID_PRF_NOTE, Kind::Text(Tertiary, Card), s, "", st);
-    add(ID_PRF_STATUS, Kind::Text(Secondary, Card), s, "", st);
     add(
         ID_DPI_TITLE,
         Kind::Text(Name, Card),
         s,
         "Sensibilidad (DPI)",
-        st,
+        st | WS_GROUP.0,
     );
     add(ID_DPI_BADGE, Kind::Text(Tertiary, Card), s, "", st);
+    add(
+        ID_DPI_NOW_LABEL,
+        Kind::Text(Tertiary, Card),
+        s,
+        "ACTUAL",
+        st,
+    );
+    add(ID_DPI_NOW, Kind::Text(Title, Card), s, "", st);
     add(ID_DPI_DESC, Kind::Text(Secondary, Card), s, "", st);
     add(ID_DPI_CURRENT, Kind::Text(Secondary, Card), s, "", st);
     // The label directly precedes the field: it becomes its accessible name.
@@ -980,230 +1145,35 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
     );
     add(ID_LIGHT_SAVED, Kind::Text(Secondary, Card), s, "", st);
     add(ID_LIGHT_STATUS, Kind::Text(Secondary, Card), s, "", st);
-    add(ID_BTN_TITLE, Kind::Text(Name, Card), s, "Botones", st | grp);
-    add(ID_BTN_DESC, Kind::Text(Secondary, Card), s, "", st);
-    add(ID_BTN_STATUS, Kind::Text(Notice, Card), s, "", st);
-    for i in 0..MAX_BUTTONS {
-        add(ID_BTN_NAME0 + i, Kind::Text(Name, Card), s, "", st);
-        add(ID_BTN_ACT0 + i, Kind::Text(Primary, Card), s, "", st);
-        if i == 0 {
-            add(
-                ID_BTN_LOCK,
-                Kind::Text(Tertiary, Card),
-                s,
-                "No se cambia",
-                st,
-            );
-        }
-        add(ID_BTN_BADGE0 + i, Kind::Text(Tertiary, Card), s, "", st);
-        add(
-            ID_BTN_CHANGE0 + i,
-            Kind::Button(ButtonStyle::Normal, Card),
-            b,
-            "Cambiar",
-            btn,
-        );
-    }
-    // The label directly precedes the selector and the key field: it
-    // becomes their accessible name.
-    add(ID_ED_LABEL, Kind::Text(Notice, Selected), s, "Acción", st);
-    add(
-        ID_ED_COMBO,
-        Kind::Combo,
-        w!("COMBOBOX"),
-        "",
-        WS_TABSTOP.0 | WS_VSCROLL.0 | CBS_DROPDOWNLIST as u32,
-    );
-    add(
-        ID_ED_KEY_LABEL,
-        Kind::Text(Notice, Selected),
-        s,
-        "Atajo de teclado",
-        st,
-    );
-    add(
-        ID_ED_KEY,
-        Kind::Edit,
-        w!("EDIT"),
-        "",
-        WS_TABSTOP.0 | (ES_READONLY | ES_CENTER | ES_AUTOHSCROLL) as u32,
-    );
-    add(
-        ID_ED_KEY_CLEAR,
-        Kind::Button(ButtonStyle::Normal, Selected),
-        b,
-        "Borrar el atajo",
-        btn,
-    );
-    add(
-        ID_ED_KEY_HELP,
-        Kind::Text(Secondary, Selected),
-        s,
-        "Con el campo seleccionado, pulsa la combinación. Tab y Esc no se capturan: sirven para salir del campo.",
-        st,
-    );
-    add(
-        ID_ED_OK,
-        Kind::Button(ButtonStyle::Primary, Selected),
-        b,
-        "Aceptar",
-        btn,
-    );
-    add(
-        ID_ED_CANCEL,
-        Kind::Button(ButtonStyle::Normal, Selected),
-        b,
-        "Cancelar",
-        btn,
-    );
-    add(
-        ID_RATE_TITLE,
-        Kind::Text(Name, Card),
-        s,
-        "Tasa de sondeo",
-        st,
-    );
-    add(ID_RATE_VALUE, Kind::Text(Percent, Card), s, "", st);
-    add(
-        ID_RATE_RO,
-        Kind::Text(Secondary, Card),
-        s,
-        "· solo lectura",
-        st,
-    );
-    add(
-        ID_RATE_DESC,
-        Kind::Text(Secondary, Card),
-        s,
-        "No se puede cambiar mientras el ratón usa sus perfiles integrados.",
-        st,
-    );
     add(
         ID_GAM_TITLE,
         Kind::Text(Name, Card),
         s,
-        "Juegos y programas",
-        st,
+        "Programas vinculados",
+        st | WS_GROUP.0,
     );
-    add(
-        ID_GAM_DESC,
-        Kind::Text(Secondary, Card),
-        s,
-        "Al abrir uno de estos programas, OpenPeripheral usa su perfil: el DPI y la luz al momento, y escribe los botones en el ratón solo si cambian. Al cerrarlo, vuelve el perfil que había. Solo funciona con OpenPeripheral abierto.",
-        st,
-    );
-    let chk = WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32;
-    add(
-        ID_GAM_AUTO,
-        Kind::Check(Card),
-        b,
-        "Cambiar de perfil al abrir estos programas",
-        chk,
-    );
-    add(
-        ID_GAM_ASK,
-        Kind::Check(Card),
-        b,
-        "Preguntar al detectar un juego nuevo",
-        chk,
-    );
-    add(
-        ID_GAM_ASK_HELP,
-        Kind::Text(Secondary, Card),
-        s,
-        "Juegos de Steam, Xbox, Epic o GOG. Se pregunta con una notificación de Windows.",
-        st,
-    );
-    add(
-        ID_GAM_NEW_TITLE,
-        Kind::Text(Notice, Card),
-        s,
-        "Juegos detectados sin responder",
-        st,
-    );
-    for i in 0..MAX_NEW {
-        add(ID_GAM_NEW0 + i, Kind::Text(Strong, Card), s, "", st);
-        add(
-            ID_GAM_CFG0 + i,
-            Kind::Button(ButtonStyle::Primary, Card),
-            b,
-            "Configurar…",
-            btn,
-        );
-        add(
-            ID_GAM_NEVER0 + i,
-            Kind::Button(ButtonStyle::Normal, Card),
-            b,
-            "No preguntar más",
-            btn,
-        );
-    }
+    add(ID_GAM_DESC, Kind::Text(Secondary, Card), s, "", st);
     for i in 0..MAX_PROGS {
         add(ID_GAM_NAME0 + i, Kind::Text(Strong, Card), s, "", st);
         add(ID_GAM_PATH0 + i, Kind::Text(Secondary, Card), s, "", st);
         add(
-            ID_GAM_SEL0 + i,
-            Kind::Button(ButtonStyle::Normal, Card),
-            b,
-            "",
-            btn,
-        );
-        add(
             ID_GAM_DEL0 + i,
             Kind::Button(ButtonStyle::Normal, Card),
             b,
-            "Quitar",
+            "Desvincular",
             btn,
         );
     }
-    add(
-        ID_GAM_EMPTY,
-        Kind::Text(Secondary, Card),
-        s,
-        "Todavía no hay programas. Se añadirán al responder a la notificación de un juego nuevo, o con «Añadir programa…».",
-        st,
-    );
+    add(ID_GAM_EMPTY, Kind::Text(Secondary, Card), s, "", st);
     add(
         ID_GAM_ADD,
         Kind::Button(ButtonStyle::Normal, Card),
         b,
-        "Añadir programa…",
-        btn,
-    );
-    add(
-        ID_GAM_UNREG,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Quitar avisos de Windows",
+        "Vincular programa…",
         btn,
     );
     add(ID_GAM_STATUS, Kind::Text(Notice, Card), s, "", st);
-    add(ID_PROFILE_TITLE, Kind::Text(Name, Card), s, "Restaurar", st);
-    add(ID_BTN_BACKUP, Kind::Text(Secondary, Card), s, "", st);
-    add(ID_WRITE_LOCK, Kind::Text(Notice, Card), s, "", st);
-    add(
-        ID_PROFILE_RESTORE,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Restaurar perfil original…",
-        btn,
-    );
-    add(
-        ID_FACTORY,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Valores de fábrica…",
-        btn,
-    );
-    add(ID_RST_DESC, Kind::Text(Secondary, Card), s, "", st);
-    add(
-        ID_RST_BTN,
-        Kind::Button(ButtonStyle::Normal, Card),
-        b,
-        "Restaurar originales",
-        btn,
-    );
-    add(ID_RST_STATUS, Kind::Text(Secondary, Card), s, "", st);
+    add(ID_GAM_FOOT, Kind::Text(Secondary, Card), s, "", st);
     add(ID_BAR_TEXT, Kind::Text(Strong, Card), s, "", st);
     add(
         ID_BAR_DISCARD,
@@ -1230,38 +1200,31 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         if let Some(hex) = ctls.iter().find(|c| c.id == ID_HEX_EDIT) {
             SendMessageW(hex.hwnd, EM_SETLIMITTEXT, Some(WPARAM(7)), None);
         }
-        if let Some(key) = ctls.iter().find(|c| c.id == ID_ED_KEY) {
+        if let Some(key) = ctls.iter().find(|c| c.id == ID_AS_KEY) {
             let _ = SetWindowSubclass(key.hwnd, Some(capture_proc), 1, 0);
         }
-        // Classic check boxes draw their text with the colours of
-        // WM_CTLCOLORSTATIC, so they follow the dark theme.
-        for c in ctls.iter().filter(|c| matches!(c.kind, Kind::Check(_))) {
-            let _ = SetWindowTheme(c.hwnd, w!(""), w!(""));
-        }
-        // Hidden until needed: hidden controls are skipped by Tab.
-        for c in &ctls {
-            let hidden = EDITOR.contains(&c.id)
-                || (ID_BTN_CHANGE0..ID_BTN_CHANGE0 + MAX_BUTTONS).contains(&c.id)
-                || [ID_BAR_DISCARD, ID_BAR_SAVE, ID_PROFILE_RESTORE, ID_FACTORY].contains(&c.id)
-                || (ID_PRF_USE0..ID_PRF_REN0 + MAX_ROWS).contains(&c.id)
-                || (ID_GAM_CFG0..ID_GAM_NEVER0 + MAX_NEW).contains(&c.id)
-                || (ID_GAM_SEL0..ID_GAM_DEL0 + MAX_PROGS).contains(&c.id)
-                || [
-                    ID_PRF_PREV,
-                    ID_PRF_NEXT,
-                    ID_GAM_TITLE,
-                    ID_GAM_AUTO,
-                    ID_GAM_ASK,
-                    ID_GAM_ADD,
-                    ID_GAM_UNREG,
-                ]
-                .contains(&c.id)
-                || [ID_PRF_TITLE, ID_PRF_REAPPLY, ID_PRF_SAVEAS, ID_PRF_NEW].contains(&c.id);
-            if hidden {
-                let _ = ShowWindow(c.hwnd, SW_HIDE);
-            }
-        }
     }
+    // Hidden until needed: hidden controls are skipped by Tab.
+    let hidden: Vec<i32> = ctls
+        .iter()
+        .map(|c| c.id)
+        .filter(|&id| {
+            (ID_DOT0..=ID_BTN_LAST).contains(&id)
+                || [ID_BAR_DISCARD, ID_BAR_SAVE].contains(&id)
+                || (ID_PILL0..ID_PILL0 + MAX_ROWS).contains(&id)
+                || (ID_GAM_DEL0..ID_GAM_DEL0 + MAX_PROGS).contains(&id)
+                || [
+                    ID_PRF_LABEL,
+                    ID_PRF_NEW,
+                    ID_PRF_MENU,
+                    ID_PRF_REAPPLY,
+                    ID_PRF_SAVEAS,
+                    ID_GAM_TITLE,
+                    ID_GAM_ADD,
+                ]
+                .contains(&id)
+        })
+        .collect();
     let state = MouseState {
         key,
         ctls,
@@ -1279,13 +1242,19 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         separators: Vec::new(),
         profile_requested: false,
         edits: Vec::new(),
-        editing: None,
         buttons_result: None,
         badges: Vec::new(),
-        edit_box: None,
-        key_field: None,
+        boxes: Vec::new(),
         save_icon: None,
-        dark_combo: None,
+        sel: 0,
+        sel_set: false,
+        button_rows: Vec::new(),
+        as_tab: AsTab::Commands,
+        as_key: None,
+        list_rows: Vec::new(),
+        list_query: None,
+        leaders: Vec::new(),
+        art: None,
         pick: None,
         light_result: None,
         tried_dpi: None,
@@ -1299,14 +1268,14 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         preview: None,
         light_icon: None,
         rows: Vec::new(),
-        active_check: None,
         profile_icon: None,
         profile_status: None,
         using: None,
         then_use: None,
         focus_active: false,
-        page: None,
-        page_shown: 0,
+        pills: Vec::new(),
+        tab: Tab::Buttons,
+        hidden,
         games_status: None,
         autos_seen: super::snapshot().map(|s| s.autos).unwrap_or(0),
         page_edits_sent: false,
@@ -1315,6 +1284,7 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         a.view.mouse = Some(state);
         a.view.scroll = 0;
     });
+    apply_tab_mask();
     fill_field_from_device(view);
     refresh(view);
     if let Some(b) = ctl(ID_BACK) {
@@ -1329,6 +1299,10 @@ pub(crate) fn leave(view: HWND) {
     let Some(state) = with_app(|a| a.view.mouse.take()).flatten() else {
         return;
     };
+    // The worker may write buttons again (no unsaved ones left here).
+    if state.page_edits_sent {
+        send(Command::PageEdits(state.key.clone(), false));
+    }
     unsafe {
         // Destroys every control of the page with them.
         let _ = DestroyWindow(state.content);
@@ -1389,11 +1363,63 @@ fn set(id: i32, text: &str) {
     }
 }
 
+/// Shows or hides a control on purpose; it also needs its tab to be shown.
 fn show(id: i32, on: bool) {
-    if let Some(h) = ctl(id) {
-        unsafe {
-            let _ = ShowWindow(h, if on { SW_SHOWNA } else { SW_HIDE });
+    with_app(|a| {
+        if let Some(m) = a.view.mouse.as_mut() {
+            m.hidden.retain(|&h| h != id);
+            if !on {
+                m.hidden.push(id);
+            }
         }
+    });
+    apply_visibility(id);
+}
+
+/// Visible when wanted and on the current tab; hidden controls are
+/// skipped by Tab.
+fn apply_visibility(id: i32) {
+    let Some((h, on)) = with_app(|a| {
+        let m = a.view.mouse.as_ref()?;
+        let c = m.ctls.iter().find(|c| c.id == id)?;
+        let on = !m.hidden.contains(&id) && tab_of(id).is_none_or(|t| t == m.tab);
+        Some((c.hwnd, on))
+    })
+    .flatten() else {
+        return;
+    };
+    unsafe {
+        let _ = ShowWindow(h, if on { SW_SHOWNA } else { SW_HIDE });
+    }
+}
+
+fn apply_tab_mask() {
+    let ids = with_app(|a| {
+        a.view
+            .mouse
+            .as_ref()
+            .map(|m| m.ctls.iter().map(|c| c.id).collect::<Vec<_>>())
+    })
+    .flatten()
+    .unwrap_or_default();
+    for id in ids {
+        apply_visibility(id);
+    }
+}
+
+/// Shows another tab of the page; pending changes stay.
+fn select_tab(view: HWND, tab: Tab) {
+    let changed = with_app(|a| {
+        a.view.mouse.as_mut().map(|m| {
+            let changed = m.tab != tab;
+            m.tab = tab;
+            changed
+        })
+    })
+    .flatten();
+    if changed == Some(true) {
+        apply_tab_mask();
+        refresh(view);
     }
 }
 
@@ -1567,8 +1593,19 @@ pub(crate) fn refresh(view: HWND) {
     // Header.
     let name = snap.map(|s| s.info.name.clone()).unwrap_or_default();
     set(ID_TITLE, &name);
+    // The report rate is read-only: a fact of the header.
+    let rate = snap.and_then(|s| match &s.status {
+        Status::Ok(st) => st.report_rate.as_ref().map(|r| text::hz(r.current_ms)),
+        _ => None,
+    });
     let sub = snap
-        .map(|s| format!("{} · {}", text::kind(s.info.kind), text::card_status(s)))
+        .map(|s| {
+            let mut t = format!("{} · {}", text::kind(s.info.kind), text::card_status(s));
+            if let Some(hz) = rate {
+                t.push_str(&format!(" · {hz} Hz"));
+            }
+            t
+        })
         .unwrap_or_default();
     set(ID_SUB, &sub);
     let energy = snap.map(text::energy).unwrap_or(Energy::Unknown);
@@ -1602,7 +1639,11 @@ pub(crate) fn refresh(view: HWND) {
             "Conecta o enciende el ratón para cambiar sus ajustes. Los controles se activarán solos cuando vuelva; los cambios sin guardar se conservan."
         },
     );
-    let notice = text::conflicts(&shared.conflicts);
+    let notice = if shared.general.conflict_notice {
+        text::conflicts(&shared.conflicts)
+    } else {
+        String::new()
+    };
     set(ID_NOTICE, &notice);
     devices_view::set_text_if_changed(view, &format!("OpenPeripheral — Ajustes de {name}"));
 
@@ -1633,6 +1674,8 @@ pub(crate) fn refresh(view: HWND) {
             ID_DPI_CURRENT,
             &saved_dpi_text(snap.and_then(|s| s.saved_dpi), cycle, base),
         );
+        // What the sensor uses now: a DPI being tried shows here first.
+        set(ID_DPI_NOW, &format!("{} DPI", d.current));
         let (lo, hi) = bounds(&d.allowed);
         let from = field.unwrap_or(d.current);
         let presets = presets_for(&d.allowed);
@@ -1686,7 +1729,6 @@ pub(crate) fn refresh(view: HWND) {
         let failed = matches!(applied, Some((false, _)));
         set(ID_APPLY, if failed { "Reintentar" } else { "Probar" });
         enable(ID_APPLY, can);
-        enable(ID_RST_BTN, can);
         let (status, icon) = if let Some((_, Pending::Apply(v))) = pending {
             (format!("Enviando {v} DPI al ratón para probarlo…"), None)
         } else if invalid {
@@ -1725,13 +1767,14 @@ pub(crate) fn refresh(view: HWND) {
             }
         });
     } else {
-        for id in [ID_DPI_EDIT, ID_MINUS, ID_PLUS, ID_APPLY, ID_RST_BTN] {
+        for id in [ID_DPI_EDIT, ID_MINUS, ID_PLUS, ID_APPLY] {
             enable(id, false);
         }
         for i in 0..PRESETS.len() as i32 {
             enable(ID_PRESET0 + i, false);
         }
         set(ID_DPI_STATUS, "");
+        set(ID_DPI_NOW, "—");
     }
 
     // Light section: only for a mouse that declares light effects.
@@ -1770,110 +1813,173 @@ pub(crate) fn refresh(view: HWND) {
     };
     let editable = editing_available() && !buttons.is_empty() && backup_date.is_some();
     let ghub = shared.conflicts.contains(&"Logitech G HUB");
-    let (editing, result) = with_app(|a| {
-        a.view
-            .mouse
-            .as_ref()
-            .map(|m| (m.editing.clone(), m.buttons_result.clone()))
+    let result =
+        with_app(|a| a.view.mouse.as_ref().and_then(|m| m.buttons_result.clone())).flatten();
+    let writing = matches!(pending, Some((_, Pending::Buttons(_))));
+    // The points of the drawing, their labels and the list of a narrow
+    // window share the chosen button.
+    let rows = button_rows(&buttons, &edits.buttons);
+    let sel = with_app(|a| {
+        let m = a.view.mouse.as_mut()?;
+        // Once the buttons are known: the first one that can change.
+        if !rows.is_empty() && (m.sel >= rows.len() || !m.sel_set) {
+            m.sel = rows.iter().position(|r| !r.locked).unwrap_or(0);
+            m.sel_set = true;
+        }
+        m.button_rows = rows.clone();
+        Some(m.sel)
     })
     .flatten()
-    .unwrap_or_default();
-    let writing = matches!(pending, Some((_, Pending::Buttons(_))));
-    let edit_row = editing.as_ref().map(|e| e.row);
-    for i in 0..MAX_BUTTONS {
-        let row = i as usize;
-        let device = buttons.get(row).copied();
-        let new = edits
-            .buttons
-            .iter()
-            .find(|(r, _)| *r == row)
-            .map(|(_, a)| *a);
-        let name = device.map(|_| text::mouse_button(row)).unwrap_or_default();
-        set(ID_BTN_NAME0 + i, &name);
-        set(
-            ID_BTN_ACT0 + i,
-            &new.or(device).map(text::action).unwrap_or_default(),
-        );
-        set(
-            ID_BTN_BADGE0 + i,
-            &match (new, device) {
-                (Some(_), Some(d)) => format!("Cambiado · antes: {}", text::action(d)),
-                _ => String::new(),
-            },
-        );
-        let surface = if edit_row == Some(row) {
-            Surface::Selected
+    .unwrap_or(0);
+    show_button_views(view, rows.len());
+    for (i, r) in rows.iter().enumerate().take(MAX_BUTTONS as usize) {
+        let id = |first: i32| first + i as i32;
+        let note = if r.locked {
+            " · no se cambia".to_string()
         } else {
-            Surface::Card
+            r.before
+                .as_ref()
+                .map(|b| format!(" · Cambiado · antes: {b}"))
+                .unwrap_or_default()
         };
-        set_kind(ID_BTN_NAME0 + i, Kind::Text(Role::Name, surface));
+        set(id(ID_LBL_NAME0), &format!("{}{note}", r.name));
+        set(id(ID_LBL_ACT0), &r.action);
         set_kind(
-            ID_BTN_ACT0 + i,
+            id(ID_LBL_ACT0),
             Kind::Text(
-                if new.is_some() {
-                    Role::Strong
+                if r.locked {
+                    Role::Secondary
                 } else {
-                    Role::Primary
+                    Role::Strong
                 },
-                surface,
+                Surface::App,
             ),
         );
-        set_kind(ID_BTN_BADGE0 + i, Kind::Text(Role::Tertiary, surface));
-        set(ID_BTN_CHANGE0 + i, &format!("Cambiar {name}"));
-        show(
-            ID_BTN_CHANGE0 + i,
-            editable && row > 0 && device.is_some() && edit_row != Some(row),
-        );
-        enable(ID_BTN_CHANGE0 + i, connected && !busy && editing.is_none());
-    }
-    if edit_row == Some(0) {
-        set_kind(ID_BTN_LOCK, Kind::Text(Role::Tertiary, Surface::Selected));
-    }
-    set(
-        ID_BTN_LOCK,
-        if buttons.is_empty() {
-            ""
-        } else {
-            "No se cambia"
-        },
-    );
-
-    // Row editor.
-    let shortcut = editing
-        .as_ref()
-        .is_some_and(|e| e.choices.get(e.selected).is_some_and(|(_, a)| a.is_none()));
-    for id in [ID_ED_LABEL, ID_ED_COMBO, ID_ED_OK, ID_ED_CANCEL] {
-        show(id, editing.is_some());
-    }
-    for id in [ID_ED_KEY_LABEL, ID_ED_KEY, ID_ED_KEY_CLEAR, ID_ED_KEY_HELP] {
-        show(id, shortcut);
-    }
-    if let Some(e) = &editing {
-        set(
-            ID_ED_KEY,
-            &e.key.map(|(m, u)| text::shortcut(m, u)).unwrap_or_default(),
-        );
-        enable(ID_ED_KEY_CLEAR, e.key.is_some());
-        enable(ID_ED_OK, !shortcut || e.key.is_some());
-    }
-    let dark = with_app(|a| a.view.palette == super::theme::DARK).unwrap_or(false);
-    let themed = with_app(|a| a.view.mouse.as_ref().and_then(|m| m.dark_combo)).flatten();
-    if themed != Some(dark) {
-        if let Some(h) = ctl(ID_ED_COMBO) {
-            unsafe {
-                let _ = if dark {
-                    SetWindowTheme(h, w!("DarkMode_CFD"), PCWSTR::null())
-                } else {
-                    SetWindowTheme(h, w!("Explorer"), PCWSTR::null())
-                };
-            }
+        // The accessible name carries everything the label shows.
+        let mut name = format!("{}: {}", r.name, r.action);
+        if r.before.is_some() {
+            name.push_str(", cambiado");
         }
-        with_app(|a| {
-            if let Some(m) = a.view.mouse.as_mut() {
-                m.dark_combo = Some(dark);
-            }
-        });
+        if r.locked {
+            name.push_str(", no se cambia");
+        }
+        if i == sel {
+            name.push_str(", elegido");
+        }
+        set(id(ID_DOT0), &name);
+        set(id(ID_ROW0), &name);
     }
+
+    // «Asignaciones», for the chosen button.
+    let chosen = rows.get(sel);
+    let as_tab = with_app(|a| a.view.mouse.as_ref().map(|m| m.as_tab))
+        .flatten()
+        .unwrap_or_default();
+    let panel = !rows.is_empty();
+    let reason = match chosen {
+        _ if !panel => None,
+        _ if !editing_available() => Some(
+            "Este ratón todavía no permite cambiar sus botones desde OpenPeripheral.".to_string(),
+        ),
+        _ if backup_date.is_none() => {
+            Some("Sin la copia del perfil original no se pueden cambiar los botones.".to_string())
+        }
+        Some(r) if r.locked && sel == 0 => {
+            Some("El botón izquierdo no se cambia: así siempre puedes usar el ratón.".into())
+        }
+        Some(r) if r.locked => Some(format!(
+            "«{}» tiene una función del perfil (en el G305, el ciclo de DPI) que todavía no se puede reasignar.",
+            r.name
+        )),
+        _ => None,
+    };
+    let usable = panel && reason.is_none();
+    let can = usable && connected && !busy;
+    show(ID_AS_TITLE, panel);
+    show(ID_AS_FOR, panel);
+    set(
+        ID_AS_FOR,
+        &chosen
+            .map(|r| format!("Para: {} · ahora {}", r.name, r.action))
+            .unwrap_or_default(),
+    );
+    set(ID_AS_LOCK, reason.as_deref().unwrap_or(""));
+    show(ID_AS_LOCK, panel && reason.is_some());
+    for (i, (t, label)) in AS_TABS.iter().enumerate() {
+        let id = ID_AS_TAB0 + i as i32;
+        show(id, usable);
+        set(
+            id,
+            &if *t == as_tab {
+                format!("{label}, elegida")
+            } else {
+                label.to_string()
+            },
+        );
+        set_tabstop(id, *t == as_tab);
+        enable(id, can);
+    }
+    let on = |t: AsTab| usable && as_tab == t;
+    for id in [
+        ID_AS_SEARCH_LABEL,
+        ID_AS_SEARCH,
+        ID_AS_COUNT,
+        ID_AS_LIST,
+        ID_AS_NOTE,
+    ] {
+        show(id, on(AsTab::Commands));
+        enable(id, can);
+    }
+    for id in [
+        ID_AS_KEY_LABEL,
+        ID_AS_KEY,
+        ID_AS_KEY_HELP,
+        ID_AS_KEY_ASSIGN,
+        ID_AS_KEY_CLEAR,
+    ] {
+        show(id, on(AsTab::Keys));
+    }
+    let current = buttons.get(sel).map(|&d| {
+        edits
+            .buttons
+            .iter()
+            .find(|(r, _)| *r == sel)
+            .map_or(d, |(_, a)| *a)
+    });
+    for (i, &mask) in MOUSE_ACTIONS.iter().enumerate() {
+        let id = ID_AS_MOUSE0 + i as i32;
+        let a = Action::Mouse(mask);
+        let is = current == Some(a);
+        show(id, on(AsTab::Mouse));
+        set(
+            id,
+            &if is {
+                format!("{}, asignado", text::action(a))
+            } else {
+                text::action(a)
+            },
+        );
+        set_style(
+            id,
+            if is {
+                ButtonStyle::Selected
+            } else {
+                ButtonStyle::Normal
+            },
+        );
+        enable(id, can);
+    }
+    let captured = with_app(|a| a.view.mouse.as_ref().and_then(|m| m.as_key)).flatten();
+    set(
+        ID_AS_KEY,
+        &captured
+            .map(|(m, u)| text::shortcut(m, u))
+            .unwrap_or_default(),
+    );
+    enable(ID_AS_KEY, can);
+    enable(ID_AS_KEY_ASSIGN, can && captured.is_some());
+    enable(ID_AS_KEY_CLEAR, can && captured.is_some());
+    refresh_commands();
 
     // Pending changes bar: DPI, light and buttons, one save.
     let n = count(&edits);
@@ -1909,7 +2015,7 @@ pub(crate) fn refresh(view: HWND) {
     enable(ID_BAR_DISCARD, !writing);
     enable(
         ID_BAR_SAVE,
-        connected && !busy && !ghub && editing.is_none() && editable && !hex_bad,
+        connected && !busy && !ghub && editable && !hex_bad,
     );
     let (save_text, save_icon) = if writing {
         (
@@ -1930,43 +2036,19 @@ pub(crate) fn refresh(view: HWND) {
         }
     });
 
-    refresh_profiles(snap, &shared, connected, pending, editing.is_some());
+    refresh_profiles(snap, &shared, connected, pending);
     refresh_games(snap, &shared, pending, !edits.buttons.is_empty());
 
-    // Restore section.
-    let backup = match snap.and_then(|s| s.backup.clone()) {
-        Some(Ok(date)) => format!(
-            "Copia del perfil original guardada en este PC el {}. Incluye el DPI, la luz y los botones.",
-            crate::backup::display_date(&date)
-        ),
+    // Why nothing can be written, and «Restaurar originales» (the restores
+    // are in the «Perfil …» menu).
+    let lock = match snap.and_then(|s| s.backup.clone()) {
         Some(Err(e)) => format!(
             "Error: no se pudo guardar la copia del perfil original ({e}). No se escribirá nada en el ratón."
         ),
-        None => String::new(),
+        _ if editable && ghub => "Cierra G HUB para guardar en el ratón.".into(),
+        _ => String::new(),
     };
-    set(ID_BTN_BACKUP, &backup);
-    set(
-        ID_WRITE_LOCK,
-        if editable && ghub {
-            "Cierra G HUB para guardar en el ratón."
-        } else {
-            ""
-        },
-    );
-    for id in [ID_PROFILE_RESTORE, ID_FACTORY] {
-        show(id, editable);
-        enable(id, connected && !busy && !ghub && editing.is_none());
-    }
-    let original = snap.and_then(|s| s.original_dpi);
-    set(
-        ID_RST_DESC,
-        &match original {
-            Some(o) => format!(
-                "«Restaurar originales» deja de aplicar el DPI y la luz de OpenPeripheral al conectar el ratón y vuelve al DPI que tenía al detectarlo ({o}) y a la luz de su perfil. No escribe en el ratón."
-            ),
-            None => "«Restaurar originales» deja de aplicar el DPI y la luz de OpenPeripheral al conectar el ratón. No escribe en el ratón.".into(),
-        },
-    );
+    set(ID_WRITE_LOCK, &lock);
     let rst = match (pending, &restore_text) {
         (Some((_, Pending::Restore)), _) => "Restaurando…".to_string(),
         (_, Some((true, t))) => t.clone(),
@@ -1974,19 +2056,22 @@ pub(crate) fn refresh(view: HWND) {
         _ => String::new(),
     };
     set(ID_RST_STATUS, &rst);
+    let tab = with_app(|a| a.view.mouse.as_ref().map(|m| m.tab))
+        .flatten()
+        .unwrap_or_default();
+    for (i, (t, _)) in TABS.iter().enumerate() {
+        let id = ID_TAB0 + i as i32;
+        set(
+            id,
+            &if *t == tab {
+                format!("{}, elegida", TABS[i].1)
+            } else {
+                TABS[i].1.to_string()
+            },
+        );
+        set_tabstop(id, *t == tab);
+    }
     keep_focus_visible();
-
-    // Report rate.
-    let rate = snap.and_then(|s| match &s.status {
-        Status::Ok(st) => st.report_rate.as_ref().map(|r| text::hz(r.current_ms)),
-        _ => None,
-    });
-    set(
-        ID_RATE_VALUE,
-        &rate
-            .map(|hz| format!("{hz} Hz"))
-            .unwrap_or_else(|| "—".into()),
-    );
 
     devices_view::relayout(view);
     unsafe {
@@ -2011,26 +2096,23 @@ pub(crate) fn refresh(view: HWND) {
     }
 }
 
-/// Texts, states and Tab stops of the «Perfiles» section.
+/// Texts and states of the profile pills and the notices below them.
 fn refresh_profiles(
     snap: Option<&Snapshot>,
     shared: &Shared,
     connected: bool,
     pending: Option<(u64, Pending)>,
-    editing: bool,
 ) {
     let profiles = snap.map(|s| s.profiles.clone()).unwrap_or_default();
     let active = snap.and_then(|s| s.active_profile.clone());
     let n = profiles.len();
     let has = n > 0;
-    show(ID_PRF_TITLE, has);
-    set(
-        ID_PRF_COUNT,
-        &if has { texts::count(n) } else { String::new() },
-    );
+    for id in [ID_PRF_LABEL, ID_PRF_NEW, ID_PRF_MENU] {
+        show(id, has);
+    }
     let busy = pending.is_some();
     let ghub = shared.conflicts.contains(&"Logitech G HUB");
-    let can_use = connected && !busy && !ghub && !editing;
+    let can_use = connected && !busy && !ghub;
     let active_p = profiles.iter().find(|p| Some(&p.name) == active.as_ref());
     let holds = snap.zip(active_p).and_then(|(s, p)| texts::holds(s, p));
     let mismatch = if busy {
@@ -2047,103 +2129,62 @@ fn refresh_profiles(
     enable(ID_PRF_REAPPLY, can_use);
     enable(ID_PRF_SAVEAS, !busy && n < crate::profiles::MAX_PROFILES);
     let reason = snap.and_then(|s| texts::blocked(s, ghub));
-    // Pages of 5 (decision of the user): the chosen one, else the active's.
-    let pages = texts::page_count(n);
-    let active_index = profiles
-        .iter()
-        .position(|p| Some(&p.name) == active.as_ref());
-    let chosen = with_app(|a| a.view.mouse.as_ref().and_then(|m| m.page)).flatten();
-    let page = chosen
-        .or(active_index.map(texts::page_of))
-        .unwrap_or(0)
-        .min(pages - 1);
-    with_app(|a| a.view.mouse.as_mut().map(|m| m.page_shown = page));
-    let paged = n > texts::PAGE;
-    show(ID_PRF_PREV, paged);
-    show(ID_PRF_NEXT, paged);
-    set(
-        ID_PRF_PAGE,
-        &if paged {
-            texts::page_label(page, n)
-        } else {
-            String::new()
-        },
-    );
-    enable(ID_PRF_PREV, page > 0);
-    enable(ID_PRF_NEXT, page + 1 < pages);
     set(
         ID_PRF_GAME,
         &snap.and_then(texts::game_notice).unwrap_or_default(),
     );
+    let game = snap.is_some_and(|s| s.game.is_some());
+    // Known before any pill is shown (and drawn).
+    let pills: Vec<(String, bool)> = profiles
+        .iter()
+        .map(|p| (p.name.clone(), Some(&p.name) == active.as_ref()))
+        .collect();
+    with_app(|a| a.view.mouse.as_mut().map(|m| m.pills = pills));
     for i in 0..MAX_ROWS {
-        let row = i as usize;
-        let Some(p) = profiles.get(row).filter(|_| texts::page_of(row) == page) else {
-            set(ID_PRF_NAME0 + i, "");
-            set(ID_PRF_SUM0 + i, "");
-            for id in [ID_PRF_USE0, ID_PRF_DEL0, ID_PRF_REN0] {
-                show(id + i, false);
-            }
+        let id = ID_PILL0 + i;
+        let Some(p) = profiles.get(i as usize) else {
+            show(id, false);
             continue;
         };
         let is_active = Some(&p.name) == active.as_ref();
-        let surface = if is_active {
-            Surface::Selected
+        show(id, true);
+        // Accessible names carry the profile and its state, or the reason
+        // it cannot be used; the pill draws only the name.
+        let name = if is_active {
+            format!(
+                "Perfil {}, {}",
+                p.name,
+                texts::active_label(holds, game).to_lowercase()
+            )
         } else {
-            Surface::Card
+            match reason {
+                Some(r) => format!("Usar el perfil {} ({r})", p.name),
+                None => format!("Usar el perfil {}", p.name),
+            }
         };
-        set(ID_PRF_NAME0 + i, &p.name);
-        set(ID_PRF_SUM0 + i, &texts::summary(p));
-        set_kind(ID_PRF_NAME0 + i, Kind::Text(Role::Strong, surface));
-        set_kind(ID_PRF_SUM0 + i, Kind::Text(Role::Secondary, surface));
-        show(ID_PRF_USE0 + i, !is_active);
-        show(ID_PRF_DEL0 + i, !is_active);
-        show(ID_PRF_REN0 + i, is_active);
-        // Accessible names carry the profile; the reason when blocked.
-        let use_name = match (reason, can_use) {
-            (Some(r), _) => format!("Usar el perfil {} ({})", p.name, r),
-            (None, _) => format!("Usar el perfil {}", p.name),
-        };
-        set(ID_PRF_USE0 + i, &use_name);
-        set(ID_PRF_DEL0 + i, &format!("Eliminar el perfil {}", p.name));
-        set(ID_PRF_REN0 + i, &format!("Renombrar el perfil {}", p.name));
-        enable(ID_PRF_USE0 + i, can_use);
-        enable(ID_PRF_DEL0 + i, !busy);
-        enable(ID_PRF_REN0 + i, !busy);
+        set(id, &name);
+        enable(id, is_active || can_use);
     }
     set(
-        ID_PRF_ACTIVE,
-        if active_p.is_some() {
-            texts::active_label(holds, snap.is_some_and(|s| s.game.is_some()))
+        ID_PRF_HINT,
+        if n >= 2 {
+            "Pulsar un perfil lo escribe en el ratón."
         } else {
             ""
         },
     );
     set(ID_PRF_FIRST, if has { texts::first_time(n) } else { "" });
-    show(ID_PRF_NEW, has);
     let full = n >= crate::profiles::MAX_PROFILES;
     set(
         ID_PRF_NEW,
         if full {
-            "Nuevo perfil (límite de 8 alcanzado)"
+            "Nuevo perfil (límite de 8 alcanzado: elimina uno para crear otro)"
         } else {
             "Nuevo perfil…"
         },
     );
     enable(ID_PRF_NEW, !busy && !full && active_p.is_some());
-    set(
-        ID_PRF_NOTE,
-        &if has {
-            texts::new_note(n)
-        } else {
-            String::new()
-        },
-    );
-    if has {
-        set(
-            ID_PAGE_NOTE,
-            "Cada perfil guarda el DPI, la luz y los botones. «Usar» escribe el perfil en la memoria del ratón, así que funciona aunque cierres OpenPeripheral y en otros PC. «Probar» lo envía al ratón sin guardarlo.",
-        );
-    }
+    enable(ID_PRF_MENU, !busy && active_p.is_some());
     // Status: switching, the last result, or why profiles cannot be used.
     let (using, result, focus) = with_app(|a| {
         a.view
@@ -2174,13 +2215,13 @@ fn refresh_profiles(
             m.focus_active = false;
         }
     });
-    // After "Usar", the focus goes to the row that is now active.
+    // After using a profile, the focus goes to its pill.
     if focus {
         if let Some(i) = profiles
             .iter()
             .position(|p| Some(&p.name) == active.as_ref())
         {
-            if let Some(h) = ctl(ID_PRF_REN0 + i as i32) {
+            if let Some(h) = ctl(ID_PILL0 + i as i32) {
                 unsafe {
                     let _ = SetFocus(Some(h));
                 }
@@ -2189,7 +2230,21 @@ fn refresh_profiles(
     }
 }
 
-/// Texts and states of «Juegos y programas».
+/// Paths of the programs linked to the active profile, in order (pure;
+/// tested).
+pub fn linked_programs(programs: &[crate::games::Program], active: Option<&str>) -> Vec<String> {
+    let Some(active) = active else {
+        return Vec::new();
+    };
+    programs
+        .iter()
+        .filter(|p| p.profile.as_deref() == Some(active))
+        .map(|p| p.exe.clone())
+        .collect()
+}
+
+/// Texts and states of «Avanzado»: the programs linked to the active
+/// profile.
 fn refresh_games(
     snap: Option<&Snapshot>,
     shared: &Shared,
@@ -2197,32 +2252,18 @@ fn refresh_games(
     button_edits: bool,
 ) {
     let has = snap.is_some_and(|s| !s.profiles.is_empty());
-    for id in [
-        ID_GAM_TITLE,
-        ID_GAM_AUTO,
-        ID_GAM_ASK,
-        ID_GAM_ADD,
-        ID_GAM_UNREG,
-    ] {
-        show(id, has);
-    }
+    show(ID_GAM_TITLE, has);
+    show(ID_GAM_ADD, has);
     let busy = pending.is_some();
     let Some(snap) = snap.filter(|_| has) else {
-        for i in 0..MAX_NEW {
-            set(ID_GAM_NEW0 + i, "");
-            show(ID_GAM_CFG0 + i, false);
-            show(ID_GAM_NEVER0 + i, false);
-        }
         for i in 0..MAX_PROGS {
             set(ID_GAM_NAME0 + i, "");
             set(ID_GAM_PATH0 + i, "");
-            show(ID_GAM_SEL0 + i, false);
             show(ID_GAM_DEL0 + i, false);
         }
-        set(ID_GAM_EMPTY, "");
-        set(ID_GAM_NEW_TITLE, "");
-        set(ID_GAM_ASK_HELP, "");
-        set(ID_GAM_DESC, "");
+        for id in [ID_GAM_EMPTY, ID_GAM_DESC, ID_GAM_FOOT] {
+            set(id, "");
+        }
         return;
     };
     // The worker must not write buttons over unsaved ones in this page.
@@ -2236,86 +2277,57 @@ fn refresh_games(
         });
         send(Command::PageEdits(snap.info.key.clone(), button_edits));
     }
-    for (id, on) in [(ID_GAM_AUTO, snap.auto_switch), (ID_GAM_ASK, snap.ask_new)] {
-        if let Some(h) = ctl(id) {
-            unsafe {
-                SendMessageW(h, BM_SETCHECK, Some(WPARAM(on as usize)), None);
-            }
-            enable(id, !busy);
-        }
-    }
+    let active = snap.active_profile.clone().unwrap_or_default();
+    set(ID_GAM_TITLE, &format!("Programas vinculados a «{active}»"));
     set(
         ID_GAM_DESC,
-        "Al abrir uno de estos programas, OpenPeripheral usa su perfil: el DPI y la luz al momento, y escribe los botones en el ratón solo si cambian. Al cerrarlo, vuelve el perfil que había. Solo funciona con OpenPeripheral abierto.",
+        "Al abrir uno de estos programas, OpenPeripheral usa este perfil: el DPI y la luz al momento, y escribe los botones en el ratón solo si cambian. Al cerrarlo, vuelve el perfil que había. Solo funciona con OpenPeripheral abierto.",
     );
-    set(
-        ID_GAM_ASK_HELP,
-        "Juegos de Steam, Xbox, Epic o GOG. Se pregunta con una notificación de Windows.",
-    );
-    let new = &snap.unanswered;
-    set(
-        ID_GAM_NEW_TITLE,
-        if new.is_empty() {
-            ""
-        } else {
-            "Juegos detectados sin responder"
-        },
-    );
-    for i in 0..MAX_NEW {
-        let name = new.get(i as usize).map(|e| crate::games::display_name(e));
-        set(ID_GAM_NEW0 + i, name.as_deref().unwrap_or(""));
-        show(ID_GAM_CFG0 + i, name.is_some());
-        show(ID_GAM_NEVER0 + i, name.is_some());
-        if let Some(n) = &name {
-            set(ID_GAM_CFG0 + i, &format!("Configurar {n}"));
-            set(ID_GAM_NEVER0 + i, &format!("No preguntar más por {n}"));
-        }
-        enable(ID_GAM_CFG0 + i, !busy);
-        enable(ID_GAM_NEVER0 + i, !busy);
-    }
+    let linked = linked_programs(&snap.programs, snap.active_profile.as_deref());
     for i in 0..MAX_PROGS {
-        let Some(p) = snap.programs.get(i as usize) else {
+        let Some(exe) = linked.get(i as usize) else {
             set(ID_GAM_NAME0 + i, "");
             set(ID_GAM_PATH0 + i, "");
-            show(ID_GAM_SEL0 + i, false);
             show(ID_GAM_DEL0 + i, false);
             continue;
         };
-        let name = crate::games::display_name(&p.exe);
-        let in_use = snap.game.as_deref() == Some(name.as_str());
+        let name = crate::games::display_name(exe);
+        let open = snap.game.as_deref() == Some(name.as_str());
         set(
             ID_GAM_NAME0 + i,
-            &if in_use {
+            &if open {
                 format!("{name} · abierto")
             } else {
                 name.clone()
             },
         );
-        set(ID_GAM_PATH0 + i, &p.exe);
-        show(ID_GAM_SEL0 + i, true);
+        set(ID_GAM_PATH0 + i, exe);
         show(ID_GAM_DEL0 + i, true);
-        // The accessible name carries the program; the label is drawn.
-        set(
-            ID_GAM_SEL0 + i,
-            &format!("Perfil de {name}: {}", texts::program_profile(p)),
-        );
-        set(ID_GAM_DEL0 + i, &format!("Quitar {name}"));
-        enable(ID_GAM_SEL0 + i, !busy);
+        set(ID_GAM_DEL0 + i, &format!("Desvincular {name}"));
         enable(ID_GAM_DEL0 + i, !busy);
     }
     set(
         ID_GAM_EMPTY,
-        if snap.programs.is_empty() {
-            "Todavía no hay programas. Se añadirán al responder a la notificación de un juego nuevo, o con «Añadir programa…»."
+        &if linked.is_empty() {
+            format!(
+                "Ningún programa vinculado a «{active}». Este perfil solo se usa cuando lo eliges."
+            )
         } else {
-            ""
+            String::new()
         },
     );
     enable(
         ID_GAM_ADD,
         !busy && snap.programs.len() < crate::games::MAX_PROGRAMS,
     );
-    show(ID_GAM_UNREG, crate::platform::toast::registered());
+    set(
+        ID_GAM_FOOT,
+        if shared.general.auto_switch {
+            "Cambio automático activado. Se cambia en «Ajustes», para todos los ratones."
+        } else {
+            "Cambio automático desactivado: abrir estos programas no cambia de perfil. Se activa en «Ajustes», para todos los ratones."
+        },
+    );
     // A failed automatic switch is shown here too, not only as a balloon.
     let seen = with_app(|a| a.view.mouse.as_ref().map(|m| m.autos_seen)).flatten();
     if seen.is_some_and(|s| s != shared.autos) {
@@ -2582,9 +2594,9 @@ fn keep_focus_visible() {
     if kind_of(f).is_none() || unsafe { IsWindowVisible(f).as_bool() } {
         return;
     }
-    let next = (1..MAX_BUTTONS)
-        .map(|i| ID_BTN_CHANGE0 + i)
-        .chain([ID_PROFILE_RESTORE, ID_APPLY, ID_BACK])
+    let next = (0..MAX_BUTTONS)
+        .map(|i| ID_DOT0 + i)
+        .chain([ID_PRF_MENU, ID_APPLY, ID_BACK])
         .filter_map(ctl)
         .find(|&h| unsafe { IsWindowVisible(h).as_bool() && IsWindowEnabled(h).as_bool() });
     if let Some(h) = next {
@@ -2775,22 +2787,33 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     };
     // Owner-drawn buttons reserve 4 px around for the focus ring.
     let ring = px(4.0);
-    let col = g.avail.min(px(MAX_COLUMN));
     let mut rc = RECT::default();
     unsafe {
         let _ = GetClientRect(view, &mut rc);
     }
+    let tab = with_app(|a| a.view.mouse.as_ref().map(|m| m.tab))
+        .flatten()
+        .unwrap_or_default();
+    // The header, the profiles, the tabs and the bar use the whole width
+    // (`pl`, `pw`); «Iluminación» and «Avanzado» keep a 760 px column.
+    let pl = px(if g.compact { 16.0 } else { 32.0 });
+    let pw = (rc.right - 2 * pl).max(1);
+    let col = pw.min(px(MAX_COLUMN));
     let left = (rc.right - col) / 2;
     let bh = px(if g.compact { 44.0 } else { 36.0 });
     let btn_w = |label: &str| panel::button_width(&ctx, label);
     let mut cards = Vec::new();
+    let mut separators = Vec::new();
     let mut y = px(if g.compact { 16.0 } else { 24.0 });
+    // The control's own flag: a control of the hidden bar is still "shown".
+    let visible =
+        |id: i32| unsafe { GetWindowLongW(h_of(id), GWL_STYLE) as u32 & WS_VISIBLE.0 != 0 };
 
     // Back button.
     let back_w = btn_w("‹  Dispositivos");
     put(
         ID_BACK,
-        left - ring,
+        pl - ring,
         y - ring,
         back_w + 2 * ring,
         bh + 2 * ring,
@@ -2800,19 +2823,19 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     // Header.
     let icon = px(if g.compact { 32.0 } else { 40.0 });
     let icon_y = y;
-    let (pw, ph) = measure(ID_PCT, Role::Percent, col);
-    let (sw, sh) = measure(ID_PSTATE, Role::Secondary, col);
-    let has_energy = pw > 0 || sw > 0;
+    let (pct_w, ph) = measure(ID_PCT, Role::Percent, pw);
+    let (sw, sh) = measure(ID_PSTATE, Role::Secondary, pw);
+    let has_energy = pct_w > 0 || sw > 0;
     let energy_w = if has_energy {
-        px(50.0) + pw + px(8.0) + sw
+        px(50.0) + pct_w + px(8.0) + sw
     } else {
         0
     };
-    let tx = left + icon + px(if g.compact { 12.0 } else { 20.0 });
+    let tx = pl + icon + px(if g.compact { 12.0 } else { 20.0 });
     let title_w = if g.compact || !has_energy {
-        left + col - tx
+        pl + pw - tx
     } else {
-        left + col - tx - energy_w - px(20.0)
+        pl + pw - tx - energy_w - px(20.0)
     };
     let (_, th) = measure(ID_TITLE, Role::Title, title_w);
     put(ID_TITLE, tx, y, title_w, th);
@@ -2823,10 +2846,10 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     let energy_row =
         |bx: i32, by: i32, row_h: i32, put: &mut dyn FnMut(i32, i32, i32, i32, i32)| {
             let gy = by + (row_h - px(18.0)) / 2;
-            put(ID_PCT, bx + px(50.0), by + (row_h - ph) / 2, pw + 2, ph);
+            put(ID_PCT, bx + px(50.0), by + (row_h - ph) / 2, pct_w + 2, ph);
             put(
                 ID_PSTATE,
-                bx + px(50.0) + pw + px(8.0),
+                bx + px(50.0) + pct_w + px(8.0),
                 by + (row_h - sh) / 2,
                 sw + 2,
                 sh,
@@ -2836,12 +2859,12 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     if g.compact {
         y += header_h + px(10.0);
         if has_energy {
-            battery = Some(energy_row(left, y, px(28.0), &mut put));
+            battery = Some(energy_row(pl, y, px(28.0), &mut put));
             y += px(28.0);
         }
     } else {
         if has_energy {
-            battery = Some(energy_row(left + col - energy_w, y, header_h, &mut put));
+            battery = Some(energy_row(pl + pw - energy_w, y, header_h, &mut put));
         }
         y += header_h;
     }
@@ -2852,9 +2875,9 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     y += px(20.0);
 
     // Disconnected text.
-    let (_, dh) = measure(ID_DISC, Role::Notice, col);
+    let (_, dh) = measure(ID_DISC, Role::Notice, pw);
     if dh > 0 {
-        put(ID_DISC, left, y, col, dh);
+        put(ID_DISC, pl, y, pw, dh);
         y += dh + px(20.0);
     } else {
         put(ID_DISC, 0, 0, 0, 0);
@@ -2862,30 +2885,159 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
 
     // Conflict notice.
     let mut notice = None;
-    let (_, nh) = measure(ID_NOTICE, Role::Notice, col - px(56.0));
+    let (_, nh) = measure(ID_NOTICE, Role::Notice, pw - px(56.0));
     if nh > 0 {
         let box_h = nh.max(px(18.0)) + px(20.0);
-        put(ID_NOTICE, left + px(42.0), y + px(10.0), col - px(56.0), nh);
+        put(ID_NOTICE, pl + px(42.0), y + px(10.0), pw - px(56.0), nh);
         notice = Some(RECT {
-            left,
+            left: pl,
             top: y,
-            right: left + col,
+            right: pl + pw,
             bottom: y + box_h,
         });
         y += box_h + px(20.0);
     } else {
         put(ID_NOTICE, 0, 0, 0, 0);
     }
-    let (_, nth) = measure(ID_PAGE_NOTE, Role::Secondary, col);
-    put(ID_PAGE_NOTE, left, y, col, nth);
-    y += nth + px(20.0);
+
+    // Profiles: «PERFILES», a pill per profile, «+ Nuevo», «Perfil …» and
+    // the hint, wrapping; then the notices about the profiles.
+    let mut profile_status_xy = None;
+    let pills = with_app(|a| a.view.mouse.as_ref().map(|m| m.pills.clone()))
+        .flatten()
+        .unwrap_or_default();
+    let notes_w = pw.min(px(900.0));
+    if visible(ID_PRF_LABEL) {
+        let (lw, lh) = measure(ID_PRF_LABEL, Role::Tertiary, pw);
+        let mut x = pl;
+        let mut row_y = y;
+        put(ID_PRF_LABEL, x, row_y + (bh - lh) / 2, lw + 2, lh);
+        x += lw + px(14.0);
+        // The active pill is semibold and has a check mark: wider.
+        let mut items: Vec<(i32, i32)> = pills
+            .iter()
+            .enumerate()
+            .map(|(i, (name, active))| {
+                let extra = if *active { px(34.0) } else { 0 };
+                (ID_PILL0 + i as i32, btn_w(name) + extra)
+            })
+            .collect();
+        items.push((ID_PRF_NEW, btn_w("+ Nuevo")));
+        items.push((ID_PRF_MENU, btn_w("Perfil …")));
+        for (id, w) in items {
+            if x > pl && x + w > pl + pw {
+                x = pl;
+                row_y += bh + px(8.0);
+            }
+            put(id, x - ring, row_y - ring, w + 2 * ring, bh + 2 * ring);
+            x += w + px(8.0);
+        }
+        let (hw, hh) = measure(ID_PRF_HINT, Role::Secondary, pw);
+        if hw > 0 {
+            if x + px(8.0) + hw > pl + pw {
+                x = pl;
+                row_y += bh + px(8.0);
+            } else {
+                x += px(8.0);
+            }
+            put(ID_PRF_HINT, x, row_y + (bh - hh) / 2, hw + 2, hh);
+        } else {
+            put(ID_PRF_HINT, 0, 0, 0, 0);
+        }
+        y = row_y + bh + px(14.0);
+    } else {
+        for id in [ID_PRF_LABEL, ID_PRF_NEW, ID_PRF_MENU, ID_PRF_HINT] {
+            put(id, 0, 0, 0, 0);
+        }
+    }
+    for (id, role) in [
+        (ID_PRF_GAME, Role::Notice),
+        (ID_PRF_FIRST, Role::Secondary),
+        (ID_WRITE_LOCK, Role::Notice),
+        (ID_RST_STATUS, Role::Secondary),
+    ] {
+        let (_, h) = measure(id, role, notes_w);
+        if h > 0 {
+            put(id, pl, y, notes_w, h);
+            y += h + px(10.0);
+        } else {
+            put(id, 0, 0, 0, 0);
+        }
+    }
+    // The mouse does not hold the active profile.
+    let (_, mh) = measure(ID_PRF_MISMATCH, Role::Notice, notes_w);
+    if mh > 0 && visible(ID_PRF_REAPPLY) {
+        put(ID_PRF_MISMATCH, pl, y, notes_w, mh);
+        y += mh + px(10.0);
+        // Drawn in semibold (primary style): wider than measured.
+        let rw = btn_w(&txt(ID_PRF_REAPPLY)) + px(16.0);
+        let sw = btn_w("Guardar como perfil nuevo…");
+        put(
+            ID_PRF_REAPPLY,
+            pl - ring,
+            y - ring,
+            rw + 2 * ring,
+            bh + 2 * ring,
+        );
+        if g.compact {
+            y += bh + px(10.0);
+            put(
+                ID_PRF_SAVEAS,
+                pl - ring,
+                y - ring,
+                sw + 2 * ring,
+                bh + 2 * ring,
+            );
+        } else {
+            let sx = pl + rw + px(12.0);
+            put(
+                ID_PRF_SAVEAS,
+                sx - ring,
+                y - ring,
+                sw + 2 * ring,
+                bh + 2 * ring,
+            );
+        }
+        y += bh + px(14.0);
+    } else {
+        for id in [ID_PRF_MISMATCH, ID_PRF_REAPPLY, ID_PRF_SAVEAS] {
+            put(id, 0, 0, 0, 0);
+        }
+    }
+    let (_, sth) = measure(ID_PRF_STATUS, Role::Secondary, notes_w - px(24.0));
+    if sth > 0 {
+        put(ID_PRF_STATUS, pl + px(24.0), y, notes_w - px(24.0), sth);
+        profile_status_xy = Some((pl, y));
+        y += sth + px(14.0);
+    } else {
+        put(ID_PRF_STATUS, 0, 0, 0, 0);
+    }
+    y += px(6.0);
+
+    // Tabs of the page: a row (3 equal columns in a narrow window) over a
+    // `border.card` line; each tab draws its part of the line, so the first
+    // one starts at the margin with its focus ring area.
+    let mut x = pl + ring;
+    for (i, (_, label)) in TABS.iter().enumerate() {
+        let w = if g.compact {
+            (pw - 2 * ring - px(8.0)) / 3
+        } else {
+            ctx.measure(label, FontRole::Strong, 1000, 1).0 + px(28.0)
+        };
+        put(
+            ID_TAB0 + i as i32,
+            x - ring,
+            y - ring,
+            w + 2 * ring,
+            bh + 2 * ring,
+        );
+        x += w + px(4.0);
+    }
+    separators.push((pl, pl + pw, y + bh + ring - 1));
+    y += bh + ring + px(20.0);
 
     let pad = px(if g.compact { 16.0 } else { 20.0 });
     let mut badges = Vec::new();
-    let mut separators = Vec::new();
-    // The control's own flag: a control of the hidden bar is still "shown".
-    let visible =
-        |id: i32| unsafe { GetWindowLongW(h_of(id), GWL_STYLE) as u32 & WS_VISIBLE.0 != 0 };
     // Section title with the "Cambiado · antes: …" outline at its right
     // (below it in a narrow window).
     let title_row = |title: i32,
@@ -2921,430 +3073,460 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     };
     let inner = col - 2 * pad;
     let ix = left + pad;
-
-    // Profiles section.
     let mut rows = Vec::new();
-    let mut active_check = None;
-    let mut profile_status_xy = None;
-    let row_ids = |i: i32| {
-        [
-            ID_PRF_NAME0 + i,
-            ID_PRF_SUM0 + i,
-            ID_PRF_USE0 + i,
-            ID_PRF_DEL0 + i,
-            ID_PRF_REN0 + i,
-        ]
-    };
-    if visible(ID_PRF_TITLE) {
-        let top = y;
-        let mut cy = y + pad;
-        let (tw, th) = measure(ID_PRF_TITLE, Role::Name, inner);
-        put(ID_PRF_TITLE, ix, cy, tw + 2, th);
-        let (cw, ch) = measure(ID_PRF_COUNT, Role::Tertiary, inner);
-        put(
-            ID_PRF_COUNT,
-            ix + inner - cw - 2,
-            cy + (th - ch) / 2,
-            cw + 2,
-            ch,
-        );
-        cy += th + px(12.0);
-        let (_, gh) = measure(ID_PRF_GAME, Role::Notice, inner);
-        if gh > 0 {
-            put(ID_PRF_GAME, ix, cy, inner, gh);
-            cy += gh + px(12.0);
+    let mut field = RECT::default();
+    let mut status_xy = (0, 0);
+    let mut boxes = Vec::new();
+    let mut leaders = Vec::new();
+    let mut art_at = None;
+
+    // «Botones y DPI» (DESIGN.md, revisión 2026-10-08): «Asignaciones», the
+    // drawing and the DPI side by side from 1290 px, the DPI under the
+    // drawing from 760 px, everything stacked below.
+    if tab == Tab::Buttons {
+        use super::mouse_art::Side;
+        let width_u = rc.right as f32 / g.scale;
+        let stacked = width_u < 760.0;
+        let three = width_u >= 1290.0;
+        let gap = px(20.0);
+        let (aw, dw) = (px(320.0), px(300.0));
+        let (cx, cw) = if stacked {
+            (pl, pw)
+        } else if three {
+            (pl + aw + gap, pw - aw - dw - 2 * gap)
         } else {
-            put(ID_PRF_GAME, 0, 0, 0, 0);
+            (pl + aw + gap, pw - aw - gap)
+        };
+        let top = y;
+        let (art, button_rows) = with_app(|a| {
+            let m = a.view.mouse.as_ref()?;
+            let art = a
+                .view
+                .shared
+                .devices
+                .iter()
+                .find(|d| d.info.key == m.key)
+                .map(|d| super::mouse_art::art_for(&d.info.name));
+            Some((art, m.button_rows.clone()))
+        })
+        .flatten()
+        .unwrap_or_default();
+        let art = art.unwrap_or(&super::mouse_art::GENERIC);
+        // The window may have crossed 760 px: labels or list.
+        show_button_views(view, button_rows.len());
+        // A button without a point in the drawing is only in the list of a
+        // narrow window (today every drawing has a point per button).
+        let n = button_rows
+            .len()
+            .min(art.points.len())
+            .min(MAX_BUTTONS as usize);
+
+        // The drawing, its points and their labels; the list when narrow.
+        let mut cy = top;
+        let (_, sh) = measure(ID_BTN_STATUS, Role::Notice, cw);
+        if sh > 0 {
+            put(ID_BTN_STATUS, cx, cy, cw, sh);
+            cy += sh + px(12.0);
+        } else {
+            put(ID_BTN_STATUS, 0, 0, 0, 0);
         }
-        // The mouse does not hold the active profile.
-        let (_, mh) = measure(ID_PRF_MISMATCH, Role::Notice, inner);
-        if mh > 0 && visible(ID_PRF_REAPPLY) {
-            put(ID_PRF_MISMATCH, ix, cy, inner, mh);
-            cy += mh + px(10.0);
-            // Drawn in semibold (primary style): wider than measured.
-            let rw = btn_w(&txt(ID_PRF_REAPPLY)) + px(16.0);
-            let sw = btn_w("Guardar como perfil nuevo…");
-            if g.compact {
-                put(
-                    ID_PRF_REAPPLY,
-                    ix - ring,
-                    cy - ring,
-                    inner + 2 * ring,
-                    bh + 2 * ring,
-                );
-                cy += bh + px(10.0);
-                put(
-                    ID_PRF_SAVEAS,
-                    ix - ring,
-                    cy - ring,
-                    inner + 2 * ring,
-                    bh + 2 * ring,
-                );
+        let name_h = ctx.measure("Ag", FontRole::Body, 1000, 1).1;
+        let act_h = ctx.measure("Ag", FontRole::Strong, 1000, 1).1;
+        if n > 0 {
+            let side_w = if stacked { 0 } else { px(180.0) };
+            let max_h = if stacked { px(300.0) } else { px(470.0) };
+            let max_w = (cw - 2 * side_w - px(40.0)).max(px(120.0));
+            let k = (max_h as f32 / art.size.1).min(max_w as f32 / art.size.0);
+            let (art_w, art_h) = ((art.size.0 * k) as i32, (art.size.1 * k) as i32);
+            let has_top = !stacked && art.points[..n].iter().any(|p| p.side == Side::Top);
+            let ax0 = cx + (cw - art_w) / 2;
+            let ay0 = cy
+                + if has_top {
+                    name_h + act_h + px(18.0)
+                } else {
+                    px(8.0)
+                };
+            art_at = Some((ax0, ay0, k, art));
+            let dot = px(28.0);
+            // Bottom of the last label on the left and on the right: a label
+            // that would overlap it goes under its line instead.
+            let mut last = [i32::MIN; 2];
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|&a, &b| art.points[a].at.1.total_cmp(&art.points[b].at.1));
+            for i in order {
+                let p = art.points[i];
+                let (dx, dy) = (ax0 + (p.at.0 * k) as i32, ay0 + (p.at.1 * k) as i32);
+                let id = |first: i32| first + i as i32;
+                put(id(ID_DOT0), dx - dot / 2, dy - dot / 2, dot, dot);
+                if stacked {
+                    put(id(ID_LBL_NAME0), 0, 0, 0, 0);
+                    put(id(ID_LBL_ACT0), 0, 0, 0, 0);
+                    continue;
+                }
+                // Labels never cover the drawing (they are opaque).
+                let (lx, lw, align) = match p.side {
+                    Side::Left => (cx, (dx - px(24.0)).min(ax0 - px(8.0)) - cx, 0),
+                    Side::Right => {
+                        let lx = (dx + px(24.0)).max(ax0 + art_w + px(8.0));
+                        (lx, cx + cw - lx, 2)
+                    }
+                    Side::Top => (dx - px(150.0), px(300.0), 1),
+                };
+                let (_, nh) = measure(id(ID_LBL_NAME0), Role::Tertiary, lw);
+                let (_, ah) = measure(id(ID_LBL_ACT0), Role::Strong, lw);
+                let h = nh + px(2.0) + ah;
+                let ly = match p.side {
+                    Side::Top => cy,
+                    side => {
+                        let s = usize::from(side == Side::Right);
+                        let above = dy - px(6.0) - h;
+                        let ly = if above < last[s] + px(6.0) {
+                            dy + px(6.0)
+                        } else {
+                            above
+                        };
+                        last[s] = ly + h;
+                        ly
+                    }
+                };
+                set_align(id(ID_LBL_NAME0), align);
+                set_align(id(ID_LBL_ACT0), align);
+                put(id(ID_LBL_NAME0), lx, ly, lw, nh);
+                put(id(ID_LBL_ACT0), lx, ly + nh + px(2.0), lw, ah);
+                leaders.push(match p.side {
+                    Side::Left => (cx, dy, dx - dot / 2, dy),
+                    Side::Right => (dx + dot / 2, dy, cx + cw, dy),
+                    Side::Top => (dx, ly + h + px(4.0), dx, dy - dot / 2),
+                });
+            }
+            for i in n as i32..MAX_BUTTONS {
+                for first in [ID_DOT0, ID_LBL_NAME0, ID_LBL_ACT0] {
+                    put(first + i, 0, 0, 0, 0);
+                }
+            }
+            cy = ay0 + art_h + px(16.0);
+            for (i, r) in button_rows.iter().enumerate().take(MAX_BUTTONS as usize) {
+                let id = ID_ROW0 + i as i32;
+                if !stacked {
+                    put(id, 0, 0, 0, 0);
+                    continue;
+                }
+                let rh = px(if r.before.is_some() { 60.0 } else { 44.0 });
+                put(id, cx - ring, cy - ring, cw + 2 * ring, rh + 2 * ring);
+                cy += rh + px(4.0);
+            }
+            let (_, hh) = measure(ID_BTN_HINT, Role::Secondary, cw);
+            put(ID_BTN_HINT, cx, cy + px(4.0), cw, hh);
+            cy += hh + px(12.0);
+        } else {
+            for i in 0..MAX_BUTTONS {
+                for first in [ID_DOT0, ID_LBL_NAME0, ID_LBL_ACT0, ID_ROW0] {
+                    put(first + i, 0, 0, 0, 0);
+                }
+            }
+            put(ID_BTN_HINT, 0, 0, 0, 0);
+        }
+        let center_bottom = cy;
+
+        // «Asignaciones».
+        let (asx, asy, asw) = if stacked {
+            (pl, center_bottom + gap, pw)
+        } else {
+            (pl, top, aw)
+        };
+        let mut as_bottom = asy;
+        let commands = [
+            ID_AS_SEARCH_LABEL,
+            ID_AS_SEARCH,
+            ID_AS_COUNT,
+            ID_AS_LIST,
+            ID_AS_NOTE,
+        ];
+        let keys = [
+            ID_AS_KEY_LABEL,
+            ID_AS_KEY,
+            ID_AS_KEY_HELP,
+            ID_AS_KEY_ASSIGN,
+            ID_AS_KEY_CLEAR,
+        ];
+        if visible(ID_AS_TITLE) {
+            let ip = px(16.0);
+            let (ax2, iw) = (asx + ip, asw - 2 * ip);
+            let mut ay = asy + ip;
+            let (_, h) = measure(ID_AS_TITLE, Role::Name, iw);
+            put(ID_AS_TITLE, ax2, ay, iw, h);
+            ay += h + px(4.0);
+            let (_, h) = measure(ID_AS_FOR, Role::Secondary, iw);
+            put(ID_AS_FOR, ax2, ay, iw, h);
+            ay += h + px(12.0);
+            if visible(ID_AS_TAB0) {
+                let tw = (iw - px(8.0)) / 3;
+                for i in 0..AS_TABS.len() as i32 {
+                    put(
+                        ID_AS_TAB0 + i,
+                        ax2 + i * (tw + px(4.0)) - ring,
+                        ay - ring,
+                        tw + 2 * ring,
+                        bh + 2 * ring,
+                    );
+                }
+                ay += bh + ring + px(14.0);
             } else {
+                for i in 0..AS_TABS.len() as i32 {
+                    put(ID_AS_TAB0 + i, 0, 0, 0, 0);
+                }
+            }
+            let (_, h) = measure(ID_AS_LOCK, Role::Notice, iw);
+            if h > 0 {
+                put(ID_AS_LOCK, ax2, ay, iw, h);
+                ay += h + px(14.0);
+            } else {
+                put(ID_AS_LOCK, 0, 0, 0, 0);
+            }
+            // As tall as the window allows; the list scrolls inside.
+            let bar_h = with_app(|a| a.view.mouse.as_ref().map(|m| m.bar_h))
+                .flatten()
+                .unwrap_or(0);
+            let card_h = if stacked {
+                0
+            } else {
+                (rc.bottom - bar_h - top - px(24.0)).clamp(px(480.0), px(780.0))
+            };
+            let field_box = |ay: i32, boxes: &mut Vec<RECT>| {
+                let f = RECT {
+                    left: ax2,
+                    top: ay,
+                    right: ax2 + iw,
+                    bottom: ay + bh,
+                };
+                boxes.push(f);
+                let eh = (bh - px(10.0)).max(px(20.0));
+                (f.left + px(8.0), ay + (bh - eh) / 2, iw - px(16.0), eh)
+            };
+            if visible(ID_AS_LIST) {
+                let (lw, lh) = measure(ID_AS_SEARCH_LABEL, Role::Notice, iw);
+                put(ID_AS_SEARCH_LABEL, ax2, ay, lw + 2, lh);
+                ay += lh + px(6.0);
+                let (ex, ey, ew, eh) = field_box(ay, &mut boxes);
+                put(ID_AS_SEARCH, ex, ey, ew, eh);
+                ay += bh + px(8.0);
+                let (_, ch) = measure(ID_AS_COUNT, Role::Tertiary, iw);
+                put(ID_AS_COUNT, ax2, ay, iw, ch);
+                ay += ch + px(6.0);
+                let (_, nh) = measure(ID_AS_NOTE, Role::Tertiary, iw);
+                let list_h = if stacked {
+                    px(320.0)
+                } else {
+                    (asy + card_h - ip - nh - px(10.0) - ay).max(px(200.0))
+                };
+                put(ID_AS_LIST, ax2, ay, iw, list_h);
+                unsafe {
+                    SendMessageW(
+                        h_of(ID_AS_LIST),
+                        LB_SETITEMHEIGHT,
+                        Some(WPARAM(0)),
+                        Some(LPARAM(px(34.0) as isize)),
+                    );
+                }
+                ay += list_h + px(10.0);
+                put(ID_AS_NOTE, ax2, ay, iw, nh);
+                ay += nh;
+            } else {
+                for id in commands {
+                    put(id, 0, 0, 0, 0);
+                }
+            }
+            if visible(ID_AS_KEY) {
+                let (lw, lh) = measure(ID_AS_KEY_LABEL, Role::Notice, iw);
+                put(ID_AS_KEY_LABEL, ax2, ay, lw + 2, lh);
+                ay += lh + px(6.0);
+                let (ex, ey, ew, eh) = field_box(ay, &mut boxes);
+                put(ID_AS_KEY, ex, ey, ew, eh);
+                ay += bh + px(8.0);
+                let (_, hh) = measure(ID_AS_KEY_HELP, Role::Secondary, iw);
+                put(ID_AS_KEY_HELP, ax2, ay, iw, hh);
+                ay += hh + px(12.0);
+                // «Asignar» is semibold (primary style): wider than measured.
+                let (sw, cw2) = (btn_w("Asignar") + px(16.0), btn_w("Borrar"));
                 put(
-                    ID_PRF_REAPPLY,
-                    ix - ring,
-                    cy - ring,
-                    rw + 2 * ring,
-                    bh + 2 * ring,
-                );
-                let sx = ix + rw + px(12.0);
-                put(
-                    ID_PRF_SAVEAS,
-                    sx - ring,
-                    cy - ring,
+                    ID_AS_KEY_ASSIGN,
+                    ax2 - ring,
+                    ay - ring,
                     sw + 2 * ring,
                     bh + 2 * ring,
                 );
-            }
-            cy += bh + px(14.0);
-        } else {
-            for id in [ID_PRF_MISMATCH, ID_PRF_REAPPLY, ID_PRF_SAVEAS] {
-                put(id, 0, 0, 0, 0);
-            }
-        }
-        // One row per profile.
-        let rpad = px(if g.compact { 12.0 } else { 14.0 });
-        let rin = inner - 2 * rpad;
-        let rx = ix + rpad;
-        let gap = px(8.0);
-        let mut active_seen = false;
-        for i in 0..MAX_ROWS {
-            if txt(ID_PRF_NAME0 + i).is_empty() {
-                for id in row_ids(i) {
-                    put(id, 0, 0, 0, 0);
-                }
-                continue;
-            }
-            let is_active = visible(ID_PRF_REN0 + i);
-            let buttons: Vec<(i32, i32)> = if is_active {
-                vec![(ID_PRF_REN0 + i, btn_w("Renombrar…"))]
+                put(
+                    ID_AS_KEY_CLEAR,
+                    ax2 + sw + px(8.0) - ring,
+                    ay - ring,
+                    cw2 + 2 * ring,
+                    bh + 2 * ring,
+                );
+                ay += bh;
             } else {
-                vec![
-                    (ID_PRF_USE0 + i, btn_w("Usar")),
-                    (ID_PRF_DEL0 + i, btn_w("Eliminar…")),
-                ]
-            };
-            let buttons_w = buttons.iter().map(|(_, w)| w + gap).sum::<i32>() - gap;
-            let text_w = if g.compact {
-                rin
-            } else {
-                rin - buttons_w - px(16.0)
-            };
-            let row_top = cy;
-            let mut ry = cy + rpad;
-            let (nw, nh) = measure(ID_PRF_NAME0 + i, Role::Strong, text_w);
-            put(ID_PRF_NAME0 + i, rx, ry, nw + 2, nh);
-            let mut name_h = nh;
-            if is_active {
-                // Check and «Activo · en el ratón» after the name, or below.
-                let check = px(22.0);
-                let (aw, ah) = measure(ID_PRF_ACTIVE, Role::Strong, text_w - check);
-                let fits = nw + px(10.0) + check + aw <= text_w;
-                let (ax, ay) = if fits {
-                    (rx + nw + px(10.0), ry)
-                } else {
-                    (rx, ry + nh + px(2.0))
-                };
-                active_check = Some((ax, ay + (ah - px(16.0)) / 2));
-                put(ID_PRF_ACTIVE, ax + check, ay, aw + 2, ah);
-                if !fits {
-                    name_h += ah + px(2.0);
-                }
-                active_seen = true;
-            }
-            ry += name_h + px(2.0);
-            let (_, sh) = measure(ID_PRF_SUM0 + i, Role::Secondary, text_w);
-            put(ID_PRF_SUM0 + i, rx, ry, text_w, sh);
-            ry += sh;
-            let row_bottom = if g.compact {
-                ry += px(10.0);
-                let n = buttons.len() as i32;
-                let w = (rin - gap * (n - 1)) / n;
-                for (k, (id, _)) in buttons.iter().enumerate() {
-                    let bx = rx + (w + gap) * k as i32;
-                    put(*id, bx - ring, ry - ring, w + 2 * ring, bh + 2 * ring);
-                }
-                ry + bh + rpad
-            } else {
-                let content_h = (ry - (cy + rpad)).max(bh);
-                let by = cy + rpad + (content_h - bh) / 2;
-                let mut bx = rx + rin - buttons_w;
-                for (id, w) in &buttons {
-                    put(*id, bx - ring, by - ring, w + 2 * ring, bh + 2 * ring);
-                    bx += w + gap;
-                }
-                cy + rpad + content_h + rpad
-            };
-            for id in [ID_PRF_USE0 + i, ID_PRF_DEL0 + i, ID_PRF_REN0 + i] {
-                if !buttons.iter().any(|(b, _)| *b == id) {
+                for id in keys {
                     put(id, 0, 0, 0, 0);
                 }
             }
-            rows.push((
-                RECT {
-                    left: ix,
-                    top: row_top,
-                    right: ix + inner,
-                    bottom: row_bottom,
-                },
-                is_active,
-            ));
-            cy = row_bottom + gap;
-        }
-        if !active_seen {
-            put(ID_PRF_ACTIVE, 0, 0, 0, 0);
-        }
-        if visible(ID_PRF_PREV) {
-            let pw = btn_w("‹ Anterior");
-            let nw = btn_w("Siguiente ›");
-            let (lw, lh) = measure(ID_PRF_PAGE, Role::Secondary, inner);
-            put(
-                ID_PRF_PREV,
-                ix - ring,
-                cy - ring,
-                pw + 2 * ring,
-                bh + 2 * ring,
-            );
-            put(
-                ID_PRF_PAGE,
-                ix + pw + px(16.0),
-                cy + (bh - lh) / 2,
-                lw + 2,
-                lh,
-            );
-            let nx = ix + pw + px(32.0) + lw;
-            put(
-                ID_PRF_NEXT,
-                nx - ring,
-                cy - ring,
-                nw + 2 * ring,
-                bh + 2 * ring,
-            );
-            cy += bh + px(8.0);
+            if visible(ID_AS_MOUSE0) {
+                for i in 0..MOUSE_ACTIONS.len() as i32 {
+                    put(
+                        ID_AS_MOUSE0 + i,
+                        ax2 - ring,
+                        ay - ring,
+                        iw + 2 * ring,
+                        bh + 2 * ring,
+                    );
+                    ay += bh + px(6.0);
+                }
+            } else {
+                for i in 0..MOUSE_ACTIONS.len() as i32 {
+                    put(ID_AS_MOUSE0 + i, 0, 0, 0, 0);
+                }
+            }
+            as_bottom = (ay + ip).max(asy + card_h);
+            cards.push(RECT {
+                left: asx,
+                top: asy,
+                right: asx + asw,
+                bottom: as_bottom,
+            });
         } else {
-            for id in [ID_PRF_PREV, ID_PRF_PAGE, ID_PRF_NEXT] {
+            for id in [ID_AS_TITLE, ID_AS_FOR, ID_AS_LOCK]
+                .into_iter()
+                .chain(commands)
+                .chain(keys)
+                .chain((0..AS_TABS.len() as i32).map(|i| ID_AS_TAB0 + i))
+                .chain((0..MOUSE_ACTIONS.len() as i32).map(|i| ID_AS_MOUSE0 + i))
+            {
                 put(id, 0, 0, 0, 0);
             }
         }
-        cy += px(6.0);
-        let (_, fh) = measure(ID_PRF_FIRST, Role::Secondary, inner);
-        if fh > 0 {
-            put(ID_PRF_FIRST, ix, cy, inner, fh);
-            cy += fh + px(10.0);
-        } else {
-            put(ID_PRF_FIRST, 0, 0, 0, 0);
-        }
-        let nw = btn_w(&txt(ID_PRF_NEW)).max(btn_w("Nuevo perfil…"));
-        if g.compact {
-            put(
-                ID_PRF_NEW,
-                ix - ring,
-                cy - ring,
-                inner + 2 * ring,
-                bh + 2 * ring,
-            );
-            cy += bh + px(8.0);
-            let (_, h) = measure(ID_PRF_NOTE, Role::Tertiary, inner);
-            put(ID_PRF_NOTE, ix, cy, inner, h);
-            cy += h;
-        } else {
-            put(
-                ID_PRF_NEW,
-                ix - ring,
-                cy - ring,
-                nw + 2 * ring,
-                bh + 2 * ring,
-            );
-            let note_w = inner - nw - px(16.0);
-            let (_, h) = measure(ID_PRF_NOTE, Role::Tertiary, note_w);
-            put(
-                ID_PRF_NOTE,
-                ix + nw + px(16.0),
-                cy + (bh - h).max(0) / 2,
-                note_w,
-                h,
-            );
-            cy += bh.max(h);
-        }
-        let (_, sth) = measure(ID_PRF_STATUS, Role::Secondary, inner - px(24.0));
-        if sth > 0 {
-            cy += px(12.0);
-            put(ID_PRF_STATUS, ix + px(24.0), cy, inner - px(24.0), sth);
-            profile_status_xy = Some((ix, cy));
-            cy += sth;
-        } else {
-            put(ID_PRF_STATUS, 0, 0, 0, 0);
-        }
-        cy += pad;
-        cards.push(RECT {
-            left,
-            top,
-            right: left + col,
-            bottom: cy,
-        });
-        y = cy + px(20.0);
-    } else {
-        for id in [
-            ID_PRF_TITLE,
-            ID_PRF_COUNT,
-            ID_PRF_GAME,
-            ID_PRF_PREV,
-            ID_PRF_PAGE,
-            ID_PRF_NEXT,
-            ID_PRF_MISMATCH,
-            ID_PRF_REAPPLY,
-            ID_PRF_SAVEAS,
-            ID_PRF_ACTIVE,
-            ID_PRF_FIRST,
-            ID_PRF_NEW,
-            ID_PRF_NOTE,
-            ID_PRF_STATUS,
-        ]
-        .into_iter()
-        .chain((0..MAX_ROWS).flat_map(row_ids))
-        {
-            put(id, 0, 0, 0, 0);
-        }
-    }
 
-    // DPI section.
-    let top = y;
-    let mut cy = y + pad;
-    let h = title_row(ID_DPI_TITLE, ID_DPI_BADGE, cy, &mut put, &mut badges);
-    cy += h + px(4.0);
-    let (_, h) = measure(ID_DPI_DESC, Role::Secondary, inner);
-    put(ID_DPI_DESC, ix, cy, inner, h);
-    cy += h + px(16.0);
-    let (lw, lh) = measure(ID_DPI_LABEL, Role::Notice, inner);
-    put(ID_DPI_LABEL, ix, cy, lw + 2, lh);
-    cy += lh + px(6.0);
-    let step_w = px(if g.compact { 44.0 } else { 36.0 });
-    let field_w = if g.compact {
-        inner - 2 * step_w - px(12.0)
-    } else {
-        px(96.0)
-    };
-    let field = RECT {
-        left: ix + step_w + px(6.0),
-        top: cy,
-        right: ix + step_w + px(6.0) + field_w,
-        bottom: cy + bh,
-    };
-    put(
-        ID_MINUS,
-        ix - ring,
-        cy - ring,
-        step_w + 2 * ring,
-        bh + 2 * ring,
-    );
-    put(
-        ID_PLUS,
-        field.right + px(6.0) - ring,
-        cy - ring,
-        step_w + 2 * ring,
-        bh + 2 * ring,
-    );
-    let edit_h = (bh - px(10.0)).max(px(20.0));
-    put(
-        ID_DPI_EDIT,
-        field.left + px(4.0),
-        cy + (bh - edit_h) / 2,
-        field_w - px(8.0),
-        edit_h,
-    );
-    let apply_w = btn_w("Reintentar").max(btn_w("Probar"));
-    let (cw, ch) = measure(ID_DPI_CURRENT, Role::Secondary, inner);
-    if g.compact {
-        cy += bh + px(14.0);
-    } else {
-        let ax = field.right + px(6.0) + step_w + px(16.0);
+        // «Sensibilidad (DPI)».
+        let (dx0, dy0, dw0) = if three {
+            (pl + pw - dw, top, dw)
+        } else if stacked {
+            (pl, as_bottom + gap, pw)
+        } else {
+            (cx, center_bottom + gap, cw)
+        };
+        let ip = px(16.0);
+        let (dxi, diw) = (dx0 + ip, dw0 - 2 * ip);
+        let mut dy = dy0 + ip;
+        let (tw, th) = measure(ID_DPI_TITLE, Role::Name, diw);
+        put(ID_DPI_TITLE, dxi, dy, tw + 2, th);
+        let (bw, bdh) = measure(ID_DPI_BADGE, Role::Tertiary, diw - px(12.0));
+        if bdh > 0 {
+            let r = RECT {
+                left: dxi,
+                top: dy + th + px(6.0),
+                right: dxi + bw + px(12.0),
+                bottom: dy + th + px(10.0) + bdh,
+            };
+            put(ID_DPI_BADGE, r.left + px(6.0), r.top + px(2.0), bw + 2, bdh);
+            badges.push(r);
+            dy = r.bottom + px(14.0);
+        } else {
+            put(ID_DPI_BADGE, 0, 0, 0, 0);
+            dy += th + px(14.0);
+        }
+        let (lw, lh) = measure(ID_DPI_NOW_LABEL, Role::Tertiary, diw);
+        put(ID_DPI_NOW_LABEL, dxi, dy, lw + 2, lh);
+        dy += lh + px(2.0);
+        let (_, nh) = measure(ID_DPI_NOW, Role::Title, diw);
+        put(ID_DPI_NOW, dxi, dy, diw, nh);
+        dy += nh + px(2.0);
+        let (_, ch) = measure(ID_DPI_CURRENT, Role::Secondary, diw);
+        put(ID_DPI_CURRENT, dxi, dy, diw, ch);
+        dy += ch + px(16.0);
+        let (lw, lh) = measure(ID_DPI_LABEL, Role::Notice, diw);
+        put(ID_DPI_LABEL, dxi, dy, lw + 2, lh);
+        dy += lh + px(6.0);
+        let step_w = px(if g.compact { 44.0 } else { 36.0 });
+        let apply_w = btn_w("Reintentar").max(btn_w("Probar"));
+        let fw = (diw - 2 * step_w - apply_w - px(22.0)).max(px(60.0));
+        field = RECT {
+            left: dxi + step_w + px(6.0),
+            top: dy,
+            right: dxi + step_w + px(6.0) + fw,
+            bottom: dy + bh,
+        };
         put(
-            ID_APPLY,
-            ax - ring,
-            cy - ring,
-            apply_w + 2 * ring,
+            ID_MINUS,
+            dxi - ring,
+            dy - ring,
+            step_w + 2 * ring,
             bh + 2 * ring,
         );
         put(
-            ID_DPI_CURRENT,
-            ax + apply_w + px(16.0),
-            cy + (bh - ch) / 2,
-            cw + 2,
-            ch,
+            ID_PLUS,
+            field.right + px(6.0) - ring,
+            dy - ring,
+            step_w + 2 * ring,
+            bh + 2 * ring,
         );
-        cy += bh + px(16.0);
-    }
-    // Quick values.
-    let presets: Vec<i32> = (0..PRESETS.len() as i32)
-        .map(|i| ID_PRESET0 + i)
-        .filter(|&id| unsafe { GetWindowLongW(h_of(id), GWL_STYLE) as u32 & WS_VISIBLE.0 != 0 })
-        .collect();
-    let (plw, plh) = measure(ID_PRESETS_LABEL, Role::Secondary, inner);
-    if !presets.is_empty() {
-        if g.compact {
-            put(ID_PRESETS_LABEL, ix, cy, plw + 2, plh);
-            cy += plh + px(6.0);
-            let n = presets.len() as i32;
-            let gw = (inner - px(6.0) * (n - 1)) / n;
-            for (i, id) in presets.iter().enumerate() {
-                let x = ix + i as i32 * (gw + px(6.0));
-                put(*id, x - ring, cy - ring, gw + 2 * ring, bh + 2 * ring);
-            }
-            cy += bh + px(14.0);
-            put(
-                ID_APPLY,
-                ix - ring,
-                cy - ring,
-                inner + 2 * ring,
-                bh + 2 * ring,
-            );
-            cy += bh + px(14.0);
-            put(ID_DPI_CURRENT, ix, cy, cw + 2, ch);
-            cy += ch + px(10.0);
+        let edit_h = (bh - px(10.0)).max(px(20.0));
+        put(
+            ID_DPI_EDIT,
+            field.left + px(4.0),
+            dy + (bh - edit_h) / 2,
+            fw - px(8.0),
+            edit_h,
+        );
+        put(
+            ID_APPLY,
+            field.right + px(16.0) + step_w - ring,
+            dy - ring,
+            apply_w + 2 * ring,
+            bh + 2 * ring,
+        );
+        dy += bh + px(10.0);
+        let (_, dh) = measure(ID_DPI_DESC, Role::Secondary, diw);
+        put(ID_DPI_DESC, dxi, dy, diw, dh);
+        dy += dh + px(16.0);
+        let presets: Vec<i32> = (0..PRESETS.len() as i32)
+            .map(|i| ID_PRESET0 + i)
+            .filter(|&id| visible(id))
+            .collect();
+        if presets.is_empty() {
+            put(ID_PRESETS_LABEL, 0, 0, 0, 0);
         } else {
-            let ph2 = px(32.0);
-            put(ID_PRESETS_LABEL, ix, cy + (ph2 - plh) / 2, plw + 2, plh);
-            let mut x = ix + plw + px(12.0);
-            for id in &presets {
-                let label = PRESETS[(*id - ID_PRESET0) as usize].to_string();
-                let w = ctx.measure(&label, FontRole::Body, 1000, 1).0 + px(28.0);
-                put(*id, x - ring, cy - ring, w + 2 * ring, ph2 + 2 * ring);
-                x += w + px(8.0);
+            let (lw, lh) = measure(ID_PRESETS_LABEL, Role::Secondary, diw);
+            put(ID_PRESETS_LABEL, dxi, dy, lw + 2, lh);
+            dy += lh + px(8.0);
+            let cols = if stacked { 4 } else { 2 };
+            let cell = (diw - px(8.0) * (cols - 1)) / cols;
+            for (k, id) in presets.iter().enumerate() {
+                let (r, c) = (k as i32 / cols, k as i32 % cols);
+                put(
+                    *id,
+                    dxi + c * (cell + px(8.0)) - ring,
+                    dy + r * (bh + px(8.0)) - ring,
+                    cell + 2 * ring,
+                    bh + 2 * ring,
+                );
             }
-            cy += ph2 + px(16.0);
+            let rows_n = (presets.len() as i32 + cols - 1) / cols;
+            dy += rows_n * bh + (rows_n - 1) * px(8.0) + px(14.0);
         }
-    } else {
-        put(ID_PRESETS_LABEL, 0, 0, 0, 0);
-        if g.compact {
-            put(
-                ID_APPLY,
-                ix - ring,
-                cy - ring,
-                inner + 2 * ring,
-                bh + 2 * ring,
-            );
-            cy += bh + px(14.0);
-            put(ID_DPI_CURRENT, ix, cy, cw + 2, ch);
-            cy += ch + px(10.0);
+        let (_, sth) = measure(ID_DPI_STATUS, Role::Secondary, diw - px(24.0));
+        status_xy = (dxi, dy);
+        if sth > 0 {
+            put(ID_DPI_STATUS, dxi + px(24.0), dy, diw - px(24.0), sth);
+            dy += sth + px(10.0);
+        } else {
+            put(ID_DPI_STATUS, 0, 0, 0, 0);
         }
+        let dpi_bottom = dy + ip - px(10.0);
+        cards.push(RECT {
+            left: dx0,
+            top: dy0,
+            right: dx0 + dw0,
+            bottom: dpi_bottom,
+        });
+        y = center_bottom.max(as_bottom).max(dpi_bottom) + px(20.0);
     }
-    let (_, sth) = measure(ID_DPI_STATUS, Role::Secondary, inner - px(24.0));
-    let status_xy = (ix, cy);
-    put(ID_DPI_STATUS, ix + px(24.0), cy, inner - px(24.0), sth);
-    if sth > 0 {
-        cy += sth;
-    } else {
-        cy -= px(16.0);
-    }
-    cy += pad;
-    cards.push(RECT {
-        left,
-        top,
-        right: left + col,
-        bottom: cy,
-    });
-    y = cy + px(20.0);
 
     // Light section.
     let mut hex_field = None;
@@ -3551,293 +3733,8 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         y = cy + px(20.0);
     }
 
-    // Buttons.
-    let top = y;
-    let mut cy = y + pad;
-    let (_, h) = measure(ID_BTN_TITLE, Role::Name, inner);
-    put(ID_BTN_TITLE, ix, cy, inner, h);
-    cy += h + px(12.0);
-    put(ID_BTN_DESC, 0, 0, 0, 0);
-    let (_, h) = measure(ID_BTN_STATUS, Role::Notice, inner);
-    if h > 0 {
-        put(ID_BTN_STATUS, ix, cy, inner, h);
-        cy += h + px(12.0);
-    } else {
-        put(ID_BTN_STATUS, 0, 0, 0, 0);
-    }
-    let mut edit_box = None;
-    let mut key_field = None;
-    let editing_row = (0..MAX_BUTTONS).find(|&i| {
-        // The row being edited is the one whose "Cambiar" is hidden while
-        // the editor is shown.
-        visible(ID_ED_COMBO)
-            && !visible(ID_BTN_CHANGE0 + i)
-            && measure(ID_BTN_NAME0 + i, Role::Name, inner).1 > 0
-            && i > 0
-    });
-    let change_w = btn_w("Cambiar");
-    let (lock_w, lock_h) = measure(ID_BTN_LOCK, Role::Tertiary, inner);
-    let right_w = change_w.max(lock_w);
-    let name_w = if g.compact {
-        inner - right_w - px(12.0)
-    } else {
-        px(180.0)
-    };
-    for i in 0..MAX_BUTTONS {
-        let (_, nh) = measure(ID_BTN_NAME0 + i, Role::Name, name_w);
-        if nh == 0 {
-            for id in [
-                ID_BTN_NAME0 + i,
-                ID_BTN_ACT0 + i,
-                ID_BTN_BADGE0 + i,
-                ID_BTN_CHANGE0 + i,
-            ] {
-                put(id, 0, 0, 0, 0);
-            }
-            continue;
-        }
-        let row_pad = px(10.0);
-        let row_top = cy;
-        let (act_x, act_w) = if g.compact {
-            (ix, inner)
-        } else {
-            let x = ix + name_w + px(12.0);
-            (x, inner - name_w - px(12.0) - right_w - px(12.0))
-        };
-        let act_role = if get_text(h_of(ID_BTN_BADGE0 + i)).is_empty() {
-            Role::Primary
-        } else {
-            Role::Strong
-        };
-        let (_, ah) = measure(ID_BTN_ACT0 + i, act_role, act_w);
-        let (bw, bdh) = measure(ID_BTN_BADGE0 + i, Role::Tertiary, act_w - px(12.0));
-        let badge_h = if bdh > 0 { bdh + px(4.0) } else { 0 };
-        let mut y0 = cy + row_pad;
-        if g.compact {
-            let top_h = nh.max(bh);
-            put(ID_BTN_NAME0 + i, ix, y0 + (top_h - nh) / 2, name_w, nh);
-            let right_y = y0 + (top_h - bh) / 2;
-            let rx = ix + inner - change_w;
-            put(
-                ID_BTN_CHANGE0 + i,
-                rx - ring,
-                right_y - ring,
-                change_w + 2 * ring,
-                bh + 2 * ring,
-            );
-            if i == 0 {
-                put(
-                    ID_BTN_LOCK,
-                    ix + inner - lock_w,
-                    y0 + (top_h - lock_h) / 2,
-                    lock_w + 2,
-                    lock_h,
-                );
-            }
-            y0 += top_h + px(2.0);
-            put(ID_BTN_ACT0 + i, act_x, y0, act_w, ah);
-            y0 += ah;
-        } else {
-            let row_h = nh
-                .max(ah + if badge_h > 0 { px(4.0) + badge_h } else { 0 })
-                .max(bh);
-            put(ID_BTN_NAME0 + i, ix, y0 + (row_h - nh) / 2, name_w, nh);
-            let block = ah + if badge_h > 0 { px(4.0) + badge_h } else { 0 };
-            let ay = y0 + (row_h - block) / 2;
-            put(ID_BTN_ACT0 + i, act_x, ay, act_w, ah);
-            let rx = ix + inner - change_w;
-            put(
-                ID_BTN_CHANGE0 + i,
-                rx - ring,
-                y0 + (row_h - bh) / 2 - ring,
-                change_w + 2 * ring,
-                bh + 2 * ring,
-            );
-            if i == 0 {
-                put(
-                    ID_BTN_LOCK,
-                    ix + inner - lock_w,
-                    y0 + (row_h - lock_h) / 2,
-                    lock_w + 2,
-                    lock_h,
-                );
-            }
-            y0 = ay + ah;
-            if badge_h == 0 {
-                y0 = cy + row_pad + row_h;
-            }
-        }
-        if bdh > 0 {
-            y0 += px(4.0);
-            let r = RECT {
-                left: act_x,
-                top: y0,
-                right: act_x + bw + px(12.0),
-                bottom: y0 + bdh + px(4.0),
-            };
-            put(
-                ID_BTN_BADGE0 + i,
-                r.left + px(6.0),
-                r.top + px(2.0),
-                bw + 2,
-                bdh,
-            );
-            badges.push(r);
-            y0 = r.bottom;
-        } else {
-            put(ID_BTN_BADGE0 + i, 0, 0, 0, 0);
-        }
-        cy = y0.max(cy + row_pad + bh) + row_pad;
-
-        if editing_row == Some(i) {
-            // Editor box: the row plus the selector and its buttons.
-            let bx = ix + px(12.0);
-            let bwid = inner - px(24.0);
-            let mut ey = cy;
-            let (lw, lh) = measure(ID_ED_LABEL, Role::Notice, bwid);
-            put(ID_ED_LABEL, bx, ey, lw + 2, lh);
-            ey += lh + px(6.0);
-            let combo_w = bwid.min(px(360.0));
-            // A drop-down list's height includes its open list.
-            put(ID_ED_COMBO, bx, ey, combo_w, bh + px(240.0));
-            ey += bh + px(12.0);
-            if visible(ID_ED_KEY) {
-                let (klw, klh) = measure(ID_ED_KEY_LABEL, Role::Notice, bwid);
-                put(ID_ED_KEY_LABEL, bx, ey, klw + 2, klh);
-                ey += klh + px(6.0);
-                let clear_w = btn_w("Borrar");
-                let fw = (bwid - clear_w - px(12.0)).min(px(240.0));
-                let f = RECT {
-                    left: bx,
-                    top: ey,
-                    right: bx + fw,
-                    bottom: ey + bh,
-                };
-                let edit_h = (bh - px(10.0)).max(px(20.0));
-                put(
-                    ID_ED_KEY,
-                    f.left + px(4.0),
-                    ey + (bh - edit_h) / 2,
-                    fw - px(8.0),
-                    edit_h,
-                );
-                put(
-                    ID_ED_KEY_CLEAR,
-                    f.right + px(12.0) - ring,
-                    ey - ring,
-                    clear_w + 2 * ring,
-                    bh + 2 * ring,
-                );
-                key_field = Some(f);
-                ey += bh + px(6.0);
-                let (_, hh) = measure(ID_ED_KEY_HELP, Role::Secondary, bwid);
-                put(ID_ED_KEY_HELP, bx, ey, bwid, hh);
-                ey += hh + px(12.0);
-            } else {
-                for id in [ID_ED_KEY_LABEL, ID_ED_KEY, ID_ED_KEY_CLEAR, ID_ED_KEY_HELP] {
-                    put(id, 0, 0, 0, 0);
-                }
-            }
-            let ok_w = btn_w("Aceptar");
-            let cancel_w = btn_w("Cancelar");
-            put(
-                ID_ED_OK,
-                bx - ring,
-                ey - ring,
-                ok_w + 2 * ring,
-                bh + 2 * ring,
-            );
-            put(
-                ID_ED_CANCEL,
-                bx + ok_w + px(12.0) - ring,
-                ey - ring,
-                cancel_w + 2 * ring,
-                bh + 2 * ring,
-            );
-            ey += bh + px(12.0);
-            edit_box = Some(RECT {
-                left: ix - px(8.0),
-                top: row_top + px(2.0),
-                right: ix + inner + px(8.0),
-                bottom: ey,
-            });
-            cy = ey + px(4.0);
-        }
-        if i + 1 < MAX_BUTTONS
-            && measure(ID_BTN_NAME0 + i + 1, Role::Name, name_w).1 > 0
-            && editing_row != Some(i)
-            && editing_row != Some(i + 1)
-        {
-            separators.push((ix, ix + inner, cy));
-        }
-    }
-    if editing_row.is_none() {
-        for id in EDITOR {
-            put(id, 0, 0, 0, 0);
-        }
-    }
-    if lock_h == 0 {
-        put(ID_BTN_LOCK, 0, 0, 0, 0);
-    }
-    cy += pad - px(10.0);
-    cards.push(RECT {
-        left,
-        top,
-        right: left + col,
-        bottom: cy,
-    });
-    y = cy + px(20.0);
-
-    // Report rate.
-    let top = y;
-    let mut cy = y + pad;
-    let (_, h) = measure(ID_RATE_TITLE, Role::Name, inner);
-    put(ID_RATE_TITLE, ix, cy, inner, h);
-    cy += h + px(8.0);
-    let (vw, vh) = measure(ID_RATE_VALUE, Role::Percent, inner);
-    let (rw, rh) = measure(ID_RATE_RO, Role::Secondary, inner);
-    put(ID_RATE_VALUE, ix, cy, vw + 2, vh);
-    put(
-        ID_RATE_RO,
-        ix + vw + px(8.0),
-        cy + (vh - rh) / 2 + px(2.0),
-        rw + 2,
-        rh,
-    );
-    cy += vh + px(8.0);
-    let (_, h) = measure(ID_RATE_DESC, Role::Secondary, inner);
-    put(ID_RATE_DESC, ix, cy, inner, h);
-    cy += h + pad;
-    cards.push(RECT {
-        left,
-        top,
-        right: left + col,
-        bottom: cy,
-    });
-    y = cy + px(20.0);
-
-    // «Juegos y programas».
-    let gam_ids = [
-        ID_GAM_TITLE,
-        ID_GAM_DESC,
-        ID_GAM_AUTO,
-        ID_GAM_ASK,
-        ID_GAM_ASK_HELP,
-        ID_GAM_NEW_TITLE,
-        ID_GAM_EMPTY,
-        ID_GAM_ADD,
-        ID_GAM_UNREG,
-        ID_GAM_STATUS,
-    ];
-    let new_ids = |i: i32| [ID_GAM_NEW0 + i, ID_GAM_CFG0 + i, ID_GAM_NEVER0 + i];
-    let prog_ids = |i: i32| {
-        [
-            ID_GAM_NAME0 + i,
-            ID_GAM_PATH0 + i,
-            ID_GAM_SEL0 + i,
-            ID_GAM_DEL0 + i,
-        ]
-    };
+    // «Avanzado»: the programs linked to the active profile.
+    let prog_ids = |i: i32| [ID_GAM_NAME0 + i, ID_GAM_PATH0 + i, ID_GAM_DEL0 + i];
     if visible(ID_GAM_TITLE) {
         let top = y;
         let mut cy = y + pad;
@@ -3847,84 +3744,12 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         let (_, h) = measure(ID_GAM_DESC, Role::Secondary, inner);
         put(ID_GAM_DESC, ix, cy, inner, h);
         cy += h + px(14.0);
-        for id in [ID_GAM_AUTO, ID_GAM_ASK] {
-            put(id, ix, cy, inner, bh);
-            cy += bh + px(2.0);
-        }
-        let (_, h) = measure(ID_GAM_ASK_HELP, Role::Secondary, inner);
-        put(ID_GAM_ASK_HELP, ix, cy, inner, h);
-        cy += h + px(14.0);
-        // Games not answered: name, «Configurar…», «No preguntar más».
-        let (_, h) = measure(ID_GAM_NEW_TITLE, Role::Notice, inner);
-        if h > 0 {
-            put(ID_GAM_NEW_TITLE, ix, cy, inner, h);
-            cy += h + px(8.0);
-        } else {
-            put(ID_GAM_NEW_TITLE, 0, 0, 0, 0);
-        }
-        let cw = btn_w("Configurar…");
-        let vw = btn_w("No preguntar más");
-        for i in 0..MAX_NEW {
-            if txt(ID_GAM_NEW0 + i).is_empty() {
-                for id in new_ids(i) {
-                    put(id, 0, 0, 0, 0);
-                }
-                continue;
-            }
-            let text_w = if g.compact {
-                inner
-            } else {
-                inner - cw - vw - px(28.0)
-            };
-            let (_, nh) = measure(ID_GAM_NEW0 + i, Role::Strong, text_w);
-            if g.compact {
-                put(ID_GAM_NEW0 + i, ix, cy, inner, nh);
-                cy += nh + px(6.0);
-                let w = (inner - px(8.0)) / 2;
-                put(
-                    ID_GAM_CFG0 + i,
-                    ix - ring,
-                    cy - ring,
-                    w + 2 * ring,
-                    bh + 2 * ring,
-                );
-                let x2 = ix + w + px(8.0);
-                put(
-                    ID_GAM_NEVER0 + i,
-                    x2 - ring,
-                    cy - ring,
-                    w + 2 * ring,
-                    bh + 2 * ring,
-                );
-                cy += bh + px(10.0);
-            } else {
-                let row = nh.max(bh);
-                put(ID_GAM_NEW0 + i, ix, cy + (row - nh) / 2, text_w, nh);
-                let bx = ix + inner - cw - vw - px(8.0);
-                put(
-                    ID_GAM_CFG0 + i,
-                    bx - ring,
-                    cy + (row - bh) / 2 - ring,
-                    cw + 2 * ring,
-                    bh + 2 * ring,
-                );
-                let vx = bx + cw + px(8.0);
-                put(
-                    ID_GAM_NEVER0 + i,
-                    vx - ring,
-                    cy + (row - bh) / 2 - ring,
-                    vw + 2 * ring,
-                    bh + 2 * ring,
-                );
-                cy += row + px(8.0);
-            }
-        }
-        // Programs: name and path, then «Perfil: X ▾» and «Quitar»
-        // (stacked in a narrow window).
+        // A row per program: name and path, «Desvincular» at the right
+        // (below them in a narrow window).
         let rpad = px(if g.compact { 12.0 } else { 14.0 });
         let rin = inner - 2 * rpad;
         let rx = ix + rpad;
-        let dw = btn_w("Quitar");
+        let dw = btn_w("Desvincular");
         for i in 0..MAX_PROGS {
             if txt(ID_GAM_NAME0 + i).is_empty() {
                 for id in prog_ids(i) {
@@ -3932,14 +3757,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
                 }
                 continue;
             }
-            let label = sel_label(&txt(ID_GAM_SEL0 + i));
-            let sw = btn_w(&label);
-            let buttons_w = sw + px(8.0) + dw;
-            let text_w = if g.compact {
-                rin
-            } else {
-                rin - buttons_w - px(16.0)
-            };
+            let text_w = if g.compact { rin } else { rin - dw - px(16.0) };
             let row_top = cy;
             let mut ry = cy + rpad;
             let (_, nh) = measure(ID_GAM_NAME0 + i, Role::Strong, text_w);
@@ -3950,18 +3768,9 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             ry += ph;
             let bottom = if g.compact {
                 ry += px(10.0);
-                let w = rin - dw - px(8.0);
-                put(
-                    ID_GAM_SEL0 + i,
-                    rx - ring,
-                    ry - ring,
-                    w + 2 * ring,
-                    bh + 2 * ring,
-                );
-                let dx = rx + w + px(8.0);
                 put(
                     ID_GAM_DEL0 + i,
-                    dx - ring,
+                    rx - ring,
                     ry - ring,
                     dw + 2 * ring,
                     bh + 2 * ring,
@@ -3970,18 +3779,9 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             } else {
                 let content = (ry - (cy + rpad)).max(bh);
                 let by = cy + rpad + (content - bh) / 2;
-                let bx = rx + rin - buttons_w;
-                put(
-                    ID_GAM_SEL0 + i,
-                    bx - ring,
-                    by - ring,
-                    sw + 2 * ring,
-                    bh + 2 * ring,
-                );
-                let dx = bx + sw + px(8.0);
                 put(
                     ID_GAM_DEL0 + i,
-                    dx - ring,
+                    rx + rin - dw - ring,
                     by - ring,
                     dw + 2 * ring,
                     bh + 2 * ring,
@@ -4006,7 +3806,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         } else {
             put(ID_GAM_EMPTY, 0, 0, 0, 0);
         }
-        let aw = btn_w("Añadir programa…");
+        let aw = btn_w("Vincular programa…");
         put(
             ID_GAM_ADD,
             ix - ring,
@@ -4014,30 +3814,6 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             aw + 2 * ring,
             bh + 2 * ring,
         );
-        if visible(ID_GAM_UNREG) {
-            let uw = btn_w("Quitar avisos de Windows");
-            if g.compact {
-                cy += bh + px(10.0);
-                put(
-                    ID_GAM_UNREG,
-                    ix - ring,
-                    cy - ring,
-                    uw + 2 * ring,
-                    bh + 2 * ring,
-                );
-            } else {
-                let ux = ix + aw + px(12.0);
-                put(
-                    ID_GAM_UNREG,
-                    ux - ring,
-                    cy - ring,
-                    uw + 2 * ring,
-                    bh + 2 * ring,
-                );
-            }
-        } else {
-            put(ID_GAM_UNREG, 0, 0, 0, 0);
-        }
         cy += bh;
         let (_, h) = measure(ID_GAM_STATUS, Role::Notice, inner);
         if h > 0 {
@@ -4047,7 +3823,13 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         } else {
             put(ID_GAM_STATUS, 0, 0, 0, 0);
         }
-        cy += pad;
+        // The automatic switch is set in «Ajustes», under a separator.
+        cy += px(16.0);
+        separators.push((ix, ix + inner, cy));
+        cy += px(14.0);
+        let (_, h) = measure(ID_GAM_FOOT, Role::Secondary, inner);
+        put(ID_GAM_FOOT, ix, cy, inner, h);
+        cy += h + pad;
         cards.push(RECT {
             left,
             top,
@@ -4056,122 +3838,20 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         });
         y = cy + px(20.0);
     } else {
-        for id in gam_ids
-            .into_iter()
-            .chain((0..MAX_NEW).flat_map(new_ids))
-            .chain((0..MAX_PROGS).flat_map(prog_ids))
+        for id in [
+            ID_GAM_TITLE,
+            ID_GAM_DESC,
+            ID_GAM_EMPTY,
+            ID_GAM_ADD,
+            ID_GAM_STATUS,
+            ID_GAM_FOOT,
+        ]
+        .into_iter()
+        .chain((0..MAX_PROGS).flat_map(prog_ids))
         {
             put(id, 0, 0, 0, 0);
         }
     }
-
-    // Profile: original copy, restores, and forgetting the app's settings.
-    let top = y;
-    let mut cy = y + pad;
-    let (_, h) = measure(ID_PROFILE_TITLE, Role::Name, inner);
-    put(ID_PROFILE_TITLE, ix, cy, inner, h);
-    cy += h + px(4.0);
-    for (id, role) in [
-        (ID_BTN_BACKUP, Role::Secondary),
-        (ID_WRITE_LOCK, Role::Notice),
-    ] {
-        let (_, h) = measure(id, role, inner);
-        if h > 0 {
-            put(id, ix, cy, inner, h);
-            cy += h + px(8.0);
-        } else {
-            put(id, 0, 0, 0, 0);
-        }
-    }
-    if visible(ID_PROFILE_RESTORE) {
-        cy += px(4.0);
-        let rw = btn_w("Restaurar perfil original…");
-        let fw = btn_w("Valores de fábrica…");
-        if g.compact {
-            put(
-                ID_PROFILE_RESTORE,
-                ix - ring,
-                cy - ring,
-                inner + 2 * ring,
-                bh + 2 * ring,
-            );
-            cy += bh + px(10.0);
-            put(
-                ID_FACTORY,
-                ix - ring,
-                cy - ring,
-                inner + 2 * ring,
-                bh + 2 * ring,
-            );
-        } else {
-            put(
-                ID_PROFILE_RESTORE,
-                ix - ring,
-                cy - ring,
-                rw + 2 * ring,
-                bh + 2 * ring,
-            );
-            let fx = ix + rw + px(12.0);
-            put(
-                ID_FACTORY,
-                fx - ring,
-                cy - ring,
-                fw + 2 * ring,
-                bh + 2 * ring,
-            );
-        }
-        cy += bh + px(16.0);
-    } else {
-        put(ID_PROFILE_RESTORE, 0, 0, 0, 0);
-        put(ID_FACTORY, 0, 0, 0, 0);
-    }
-    separators.push((ix, ix + inner, cy - px(2.0)));
-    cy += px(14.0);
-    let rb_w = btn_w("Restaurar originales");
-    let desc_w = if g.compact {
-        inner
-    } else {
-        inner - rb_w - px(24.0)
-    };
-    let (_, h2) = measure(ID_RST_DESC, Role::Secondary, desc_w);
-    put(ID_RST_DESC, ix, cy, desc_w, h2);
-    if g.compact {
-        cy += h2 + px(10.0);
-        put(
-            ID_RST_BTN,
-            ix - ring,
-            cy - ring,
-            inner + 2 * ring,
-            bh + 2 * ring,
-        );
-        cy += bh;
-    } else {
-        let by = cy + (h2 - bh) / 2;
-        put(
-            ID_RST_BTN,
-            left + col - pad - rb_w - ring,
-            by.max(cy) - ring,
-            rb_w + 2 * ring,
-            bh + 2 * ring,
-        );
-        cy += h2.max(bh);
-    }
-    let (_, h3) = measure(ID_RST_STATUS, Role::Secondary, inner);
-    if h3 > 0 {
-        cy += px(10.0);
-        put(ID_RST_STATUS, ix, cy, inner, h3);
-        cy += h3;
-    } else {
-        put(ID_RST_STATUS, 0, 0, 0, 0);
-    }
-    cy += pad;
-    cards.push(RECT {
-        left,
-        top,
-        right: left + col,
-        bottom: cy,
-    });
-    y = cy + px(20.0);
 
     // Fixed bar: pending changes and the save result, in bar coordinates.
     let mut save_xy = None;
@@ -4184,25 +3864,26 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     if buttons_row || sth > 0 {
         let mut cy = vpad;
         if buttons_row {
-            let save_w = btn_w("Guardar en el ratón…").max(btn_w("Reintentar…"));
+            // Semibold (primary style): wider than measured.
+            let save_w = btn_w("Guardar en el ratón…").max(btn_w("Reintentar…")) + px(16.0);
             let discard_w = btn_w("Descartar");
             let text_w = if g.compact {
-                col
+                pw
             } else {
-                col - save_w - discard_w - px(24.0)
+                pw - save_w - discard_w - px(24.0)
             };
             let (_, th) = measure(ID_BAR_TEXT, Role::Strong, text_w);
             if g.compact {
-                put(ID_BAR_TEXT, left, cy, col, th);
+                put(ID_BAR_TEXT, pl, cy, pw, th);
                 cy += if th > 0 { th + px(8.0) } else { 0 };
                 put(
                     ID_BAR_DISCARD,
-                    left - ring,
+                    pl - ring,
                     cy - ring,
                     discard_w + 2 * ring,
                     bh + 2 * ring,
                 );
-                let sx = left + discard_w + px(12.0);
+                let sx = pl + discard_w + px(12.0);
                 put(
                     ID_BAR_SAVE,
                     sx - ring,
@@ -4213,8 +3894,8 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
                 cy += bh;
             } else {
                 let row_h = th.max(bh);
-                put(ID_BAR_TEXT, left, cy + (row_h - th) / 2, text_w, th);
-                let sx = left + col - save_w;
+                put(ID_BAR_TEXT, pl, cy + (row_h - th) / 2, text_w, th);
+                let sx = pl + pw - save_w;
                 put(
                     ID_BAR_SAVE,
                     sx - ring,
@@ -4225,7 +3906,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
                 let dx = if visible(ID_BAR_SAVE) {
                     sx - px(12.0) - discard_w
                 } else {
-                    left + col - discard_w
+                    pl + pw - discard_w
                 };
                 put(
                     ID_BAR_DISCARD,
@@ -4245,8 +3926,8 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             if buttons_row {
                 cy += px(10.0);
             }
-            put(ID_SAVE_STATUS, left + px(24.0), cy, col - px(24.0), sth);
-            save_xy = Some((left, cy));
+            put(ID_SAVE_STATUS, pl + px(24.0), cy, pw - px(24.0), sth);
+            save_xy = Some((pl, cy));
             cy += sth;
         } else {
             put(ID_SAVE_STATUS, 0, 0, 0, 0);
@@ -4283,7 +3964,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         let font = match c.kind {
             Kind::Text(role, _) => font_for(&fonts, role, g.compact),
             Kind::Edit => fonts.strong,
-            Kind::Button(..) | Kind::Combo | Kind::Check(_) => fonts.body,
+            Kind::Button(..) | Kind::List => fonts.body,
         };
         unsafe {
             SendMessageW(
@@ -4294,36 +3975,25 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             );
         }
     }
-    if let Some(c) = ctls.iter().find(|c| c.id == ID_ED_COMBO) {
-        // Height of the closed selector: the same as a button.
-        unsafe {
-            SendMessageW(
-                c.hwnd,
-                CB_SETITEMHEIGHT,
-                Some(WPARAM(usize::MAX)),
-                Some(LPARAM((bh - px(6.0)) as isize)),
-            );
-        }
-    }
     let status_icon_xy = status_xy;
     with_app(|a| {
         if let Some(m) = a.view.mouse.as_mut() {
             m.cards = cards;
             m.notice = notice;
             m.field = field;
-            m.icon = (left, icon_y, if g.compact { 32.0 } else { 40.0 });
+            m.icon = (pl, icon_y, if g.compact { 32.0 } else { 40.0 });
             m.battery = battery;
             m.separators = separators;
             m.badges = badges;
-            m.edit_box = edit_box;
-            m.key_field = key_field;
+            m.boxes = boxes;
+            m.leaders = leaders;
+            m.art = art_at;
             m.save_icon = match (m.save_icon, save_xy) {
                 (Some((_, _, ok)), Some((x, y))) => Some((x, y, ok)),
                 _ => None,
             };
             m.hex_field = hex_field;
             m.rows = rows;
-            m.active_check = active_check;
             m.profile_icon = match (m.profile_icon, profile_status_xy) {
                 (Some((_, _, ok)), Some((x, y))) => Some((x, y, ok)),
                 _ => None,
@@ -4386,11 +4056,11 @@ pub(crate) fn paint(mem: HDC, palette: &Palette, scale: f32, scroll: i32) {
     }
     // Profile rows: the active one on `surface.selected` with a
     // `text.primary` border, never only by colour (it also says «Activo»).
-    let (rows, active_check, profile_icon) = with_app(|a| {
+    let (rows, profile_icon) = with_app(|a| {
         a.view
             .mouse
             .as_ref()
-            .map(|m| (m.rows.clone(), m.active_check, m.profile_icon))
+            .map(|m| (m.rows.clone(), m.profile_icon))
     })
     .flatten()
     .unwrap_or_default();
@@ -4403,10 +4073,6 @@ pub(crate) fn paint(mem: HDC, palette: &Palette, scale: f32, scroll: i32) {
         } else {
             c.stroke_round_rect(0.0, 0.0, w, h, 8.0, 1.0, palette.border_card, false);
         }
-    }
-    if let Some((x, y)) = active_check {
-        c.origin(x as f32, (y - scroll) as f32);
-        glyph::check(&c, 0.0, 0.0, palette.text_primary);
     }
     if let Some((sx, sy, ok)) = profile_icon {
         c.origin(sx as f32, (sy - scroll) as f32 + scale);
@@ -4437,38 +4103,43 @@ pub(crate) fn paint(mem: HDC, palette: &Palette, scale: f32, scroll: i32) {
         c.origin(x1 as f32, (y - scroll) as f32);
         c.fill_round_rect(0.0, 0.0, u(x2 - x1), 1.0, 0.0, palette.border_card);
     }
-    let (badges, edit_box, key_field, save_icon) = with_app(|a| {
+    let (badges, boxes, leaders, art) = with_app(|a| {
         a.view
             .mouse
             .as_ref()
-            .map(|m| (m.badges.clone(), m.edit_box, m.key_field, m.save_icon))
+            .map(|m| (m.badges.clone(), m.boxes.clone(), m.leaders.clone(), m.art))
     })
     .flatten()
     .unwrap_or_default();
-    if let Some(r) = edit_box {
+    for r in &badges {
         c.origin(r.left as f32, (r.top - scroll) as f32);
         let (w, h) = (u(r.right - r.left), u(r.bottom - r.top));
-        c.fill_round_rect(0.0, 0.0, w, h, 8.0, palette.surface_selected);
-        c.stroke_round_rect(0.0, 0.0, w, h, 8.0, 1.0, palette.border_control, false);
+        c.stroke_round_rect(0.0, 0.0, w, h, 4.0, 1.0, palette.border_control, false);
     }
-    for r in badges.iter().chain(key_field.iter()) {
+    for r in &boxes {
         c.origin(r.left as f32, (r.top - scroll) as f32);
         let (w, h) = (u(r.right - r.left), u(r.bottom - r.top));
-        if Some(*r) == key_field {
-            c.fill_round_rect(0.0, 0.0, w, h, 6.0, palette.bg_app);
-        }
-        c.stroke_round_rect(
-            0.0,
-            0.0,
-            w,
-            h,
-            if Some(*r) == key_field { 6.0 } else { 4.0 },
-            1.0,
-            palette.border_control,
-            false,
+        c.fill_round_rect(0.0, 0.0, w, h, 6.0, palette.bg_app);
+        c.stroke_round_rect(0.0, 0.0, w, h, 6.0, 1.0, palette.border_control, false);
+    }
+    // The drawing of the mouse, then the leader lines of its points (1 px
+    // `border.control`; decorative, the points carry the names).
+    if let Some((x, y, k, art)) = art {
+        glyph::mouse(
+            &mut c,
+            x as f32,
+            (y - scroll) as f32,
+            k,
+            scale,
+            art,
+            palette,
         );
     }
-    let _ = save_icon;
+    for (x1, y1, x2, y2) in leaders {
+        c.origin(x1.min(x2) as f32, (y1.min(y2) - scroll) as f32);
+        let (w, h) = (u((x2 - x1).abs()).max(u(1)), u((y2 - y1).abs()).max(u(1)));
+        c.fill_round_rect(0.0, 0.0, w, h, 0.0, palette.border_control);
+    }
     // Field: rounded box behind the EDIT; 2 px border when invalid.
     if field.right > field.left {
         c.origin(field.left as f32, (field.top - scroll) as f32);
@@ -4567,14 +4238,105 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
         return;
     };
     let Some(fonts) = fonts else { return };
+    if dis.CtlType == ODT_LISTBOX {
+        draw_command(dis, &palette, &fonts, devices_view::scale_of(view));
+        return;
+    }
     let Kind::Button(style, surface) = kind else {
         return;
     };
     let bg = match surface {
         Surface::App => palette.bg_app,
         Surface::Card => palette.surface_card,
-        Surface::Selected => palette.surface_selected,
     };
+    let scale = devices_view::scale_of(view);
+    let row_of = |first: i32| {
+        in_group(id, first, MAX_BUTTONS).and_then(|i| {
+            with_app(|a| {
+                let m = a.view.mouse.as_ref()?;
+                Some((m.button_rows.get(i).cloned()?, m.sel == i))
+            })
+            .flatten()
+        })
+    };
+    if let Some((row, chosen)) = row_of(ID_DOT0) {
+        // The part of the drawing behind the point, so the point shows only
+        // its circle: the drawing in content px, less the point's position.
+        let behind = with_app(|a| {
+            let m = a.view.mouse.as_ref()?;
+            let (x, y, k, art) = m.art?;
+            let mut at = [windows::Win32::Foundation::POINT::default()];
+            unsafe { MapWindowPoints(Some(dis.hwndItem), Some(m.content), &mut at) };
+            Some((x - at[0].x, y - a.view.scroll - at[0].y, k, art))
+        })
+        .flatten();
+        draw_dot(dis, chosen, row.locked, behind, &palette, scale);
+        return;
+    }
+    if let Some((row, chosen)) = row_of(ID_ROW0) {
+        draw_button_row(dis, &row, chosen, &palette, &fonts, scale);
+        return;
+    }
+    if let Some(i) = in_group(id, ID_AS_TAB0, AS_TABS.len() as i32) {
+        let chosen =
+            with_app(|a| a.view.mouse.as_ref().map(|m| m.as_tab == AS_TABS[i].0)).flatten();
+        let label = AS_TABS[i].1.to_uppercase();
+        draw_tab(
+            dis,
+            &label,
+            chosen == Some(true),
+            bg,
+            &palette,
+            &fonts,
+            scale,
+        );
+        return;
+    }
+    if let Some(i) = in_group(id, ID_TAB0, TABS.len() as i32) {
+        let chosen = with_app(|a| a.view.mouse.as_ref().map(|m| m.tab == TABS[i].0)).flatten();
+        draw_tab(
+            dis,
+            TABS[i].1,
+            chosen == Some(true),
+            bg,
+            &palette,
+            &fonts,
+            scale,
+        );
+        return;
+    }
+    if let Some(i) = in_group(id, ID_PILL0, MAX_ROWS) {
+        let (name, active) =
+            with_app(|a| a.view.mouse.as_ref().and_then(|m| m.pills.get(i).cloned()))
+                .flatten()
+                .unwrap_or_default();
+        let style = if active {
+            ButtonStyle::Selected
+        } else {
+            ButtonStyle::Normal
+        };
+        let shape = panel::Shape {
+            radius: 18.0,
+            dashed: false,
+            check: active,
+        };
+        panel::draw_shaped(dis, &name, bg, &palette, &fonts, scale, style, shape);
+        return;
+    }
+    if id == ID_PRF_NEW || id == ID_PRF_MENU {
+        let (label, dashed) = if id == ID_PRF_NEW {
+            ("+ Nuevo", true)
+        } else {
+            ("Perfil …", false)
+        };
+        let shape = panel::Shape {
+            radius: 18.0,
+            dashed,
+            check: false,
+        };
+        panel::draw_shaped(dis, label, bg, &palette, &fonts, scale, style, shape);
+        return;
+    }
     if let Some(i) = in_group(id, ID_SWATCH0, N_SWATCHES) {
         panel::draw_swatch(
             dis,
@@ -4587,7 +4349,11 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
         return;
     }
     let label = match id {
-        c if (ID_BTN_CHANGE0..ID_BTN_CHANGE0 + MAX_BUTTONS).contains(&c) => "Cambiar".into(),
+        m if in_group(m, ID_AS_MOUSE0, MOUSE_ACTIONS.len() as i32).is_some() => {
+            text::action(Action::Mouse(MOUSE_ACTIONS[(m - ID_AS_MOUSE0) as usize]))
+        }
+        ID_AS_KEY_ASSIGN => "Asignar".into(),
+        ID_AS_KEY_CLEAR => "Borrar".into(),
         e if in_group(e, ID_EFFECT0, N_EFFECTS).is_some() => {
             light::EFFECTS[(e - ID_EFFECT0) as usize].1.to_string()
         }
@@ -4595,35 +4361,97 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
             light::SPEEDS[(v - ID_SPEED0) as usize].to_string()
         }
         ID_LIGHT_TRY => get_text(dis.hwndItem),
-        ID_ED_KEY_CLEAR => "Borrar".into(),
-        u if in_group(u, ID_PRF_USE0, MAX_ROWS).is_some() => "Usar".into(),
-        d if in_group(d, ID_PRF_DEL0, MAX_ROWS).is_some() => "Eliminar…".into(),
-        r if in_group(r, ID_PRF_REN0, MAX_ROWS).is_some() => "Renombrar…".into(),
-        ID_PRF_NEW => "Nuevo perfil…".into(),
-        ID_PRF_PREV => "‹ Anterior".into(),
-        ID_PRF_NEXT => "Siguiente ›".into(),
-        c if in_group(c, ID_GAM_CFG0, MAX_NEW).is_some() => "Configurar…".into(),
-        v if in_group(v, ID_GAM_NEVER0, MAX_NEW).is_some() => "No preguntar más".into(),
-        q if in_group(q, ID_GAM_SEL0, MAX_PROGS).is_some() => sel_label(&get_text(dis.hwndItem)),
-        d if in_group(d, ID_GAM_DEL0, MAX_PROGS).is_some() => "Quitar".into(),
+        d if in_group(d, ID_GAM_DEL0, MAX_PROGS).is_some() => "Desvincular".into(),
         ID_BACK => "‹  Dispositivos".to_string(),
         ID_MINUS => "−".into(),
         ID_PLUS => "+".into(),
-        ID_APPLY | ID_RST_BTN => get_text(dis.hwndItem),
+        ID_APPLY => get_text(dis.hwndItem),
         p if (ID_PRESET0..ID_PRESET0 + PRESETS.len() as i32).contains(&p) => {
             PRESETS[(p - ID_PRESET0) as usize].to_string()
         }
         _ => get_text(dis.hwndItem),
     };
-    panel::draw_button(
-        dis,
-        &label,
-        bg,
-        &palette,
-        &fonts,
-        devices_view::scale_of(view),
-        style,
-    );
+    panel::draw_button(dis, &label, bg, &palette, &fonts, scale, style);
+}
+
+/// A tab of the page: its label (semibold when chosen), the `border.card`
+/// line under the tabs and, on the chosen one, a 2 px `text.primary`
+/// underline; never chosen by colour alone.
+fn draw_tab(
+    dis: &DRAWITEMSTRUCT,
+    label: &str,
+    chosen: bool,
+    bg: Color,
+    palette: &Palette,
+    fonts: &Fonts,
+    scale: f32,
+) {
+    use windows::Win32::UI::Controls::{ODS_DISABLED, ODS_FOCUS, ODS_NOFOCUSRECT};
+    let r = dis.rcItem;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let has = |f: windows::Win32::UI::Controls::ODS_FLAGS| dis.itemState.0 & f.0 != 0;
+    unsafe {
+        let hdc = dis.hDC;
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w, h);
+        let old_bmp = SelectObject(mem, bmp.into());
+        let all = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+        panel::fill(mem, all, bg);
+        if let Some(c) = Canvas::new(mem, scale) {
+            let (uw, uh) = (w as f32 / scale, h as f32 / scale);
+            c.fill_round_rect(0.0, uh - 1.0, uw, 1.0, 0.0, palette.border_card);
+            if chosen {
+                c.fill_round_rect(4.0, uh - 2.0, uw - 8.0, 2.0, 0.0, palette.text_primary);
+            }
+            if has(ODS_FOCUS) && !has(ODS_NOFOCUSRECT) {
+                c.stroke_round_rect(
+                    1.0,
+                    1.0,
+                    uw - 2.0,
+                    uh - 4.0,
+                    6.0,
+                    2.0,
+                    palette.focus_ring,
+                    false,
+                );
+            }
+        }
+        SetBkMode(mem, TRANSPARENT);
+        let color = if has(ODS_DISABLED) {
+            palette.text_disabled
+        } else if chosen {
+            palette.text_primary
+        } else {
+            palette.text_secondary
+        };
+        SetTextColor(mem, COLORREF(color.colorref()));
+        let font = if chosen {
+            fonts.body_strong
+        } else {
+            fonts.body
+        };
+        let old_font = SelectObject(mem, font.into());
+        let mut t: Vec<u16> = label.encode_utf16().collect();
+        let mut tr = all;
+        if !t.is_empty() {
+            DrawTextW(
+                mem,
+                &mut t,
+                &mut tr,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
+        SelectObject(mem, old_font);
+        let _ = BitBlt(hdc, r.left, r.top, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old_bmp);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+    }
 }
 
 /// WM_CTLCOLORSTATIC / WM_CTLCOLOREDIT for this page's controls.
@@ -4635,7 +4463,7 @@ pub(crate) fn ctl_color(hdc: HDC, child: HWND) -> Option<LRESULT> {
             a.view.mouse.as_ref().and_then(|m| m.brushes),
         )
     })?;
-    let (_, app, card, selected) = brushes?;
+    let (_, app, card, _) = brushes?;
     let (fg, bg, brush): (Color, Color, HBRUSH) = match kind {
         Kind::Text(role, surface) => {
             let fg = match role {
@@ -4647,22 +4475,9 @@ pub(crate) fn ctl_color(hdc: HDC, child: HWND) -> Option<LRESULT> {
             match surface {
                 Surface::App => (fg, palette.bg_app, app),
                 Surface::Card => (fg, palette.surface_card, card),
-                Surface::Selected => (fg, palette.surface_selected, selected),
             }
         }
-        Kind::Combo => (palette.text_primary, palette.bg_app, app),
-        Kind::Check(surface) => {
-            let fg = if unsafe { IsWindowEnabled(child).as_bool() } {
-                palette.text_primary
-            } else {
-                palette.text_disabled
-            };
-            match surface {
-                Surface::App => (fg, palette.bg_app, app),
-                Surface::Card => (fg, palette.surface_card, card),
-                Surface::Selected => (fg, palette.surface_selected, selected),
-            }
-        }
+        Kind::List => (palette.text_primary, palette.surface_card, card),
         Kind::Edit => {
             let enabled = unsafe { IsWindowEnabled(child).as_bool() };
             (
@@ -4680,7 +4495,6 @@ pub(crate) fn ctl_color(hdc: HDC, child: HWND) -> Option<LRESULT> {
             let brush = match surface {
                 Surface::App => app,
                 Surface::Card => card,
-                Surface::Selected => selected,
             };
             return Some(LRESULT(brush.0 as isize));
         }
@@ -4763,9 +4577,10 @@ extern "system" fn capture_proc(
 
 fn captured(mods: u8, usage: u8) {
     with_app(|a| {
-        if let Some(e) = a.view.mouse.as_mut().and_then(|m| m.editing.as_mut()) {
-            e.key = Some((mods, usage));
-        }
+        a.view
+            .mouse
+            .as_mut()
+            .map(|m| m.as_key = Some((mods, usage)))
     });
     if let Some(view) = devices_view::hwnd() {
         refresh(view);
@@ -4773,7 +4588,7 @@ fn captured(mods: u8, usage: u8) {
 }
 
 // ---------------------------------------------------------------------------
-// Button editing commands.
+// «Botones y DPI»: choosing a button and assigning it an action.
 
 fn device_buttons() -> Vec<Action> {
     let Some(shared) = super::snapshot() else {
@@ -4788,99 +4603,525 @@ fn device_buttons() -> Vec<Action> {
     }
 }
 
-/// Opens the editor on `row`, right after it in tab order.
-fn begin_edit(view: HWND, row: usize) {
-    let buttons = device_buttons();
-    let Some(&device) = buttons.get(row) else {
-        return;
-    };
-    let current = with_app(|a| {
-        a.view
-            .mouse
-            .as_ref()
-            .and_then(|m| m.edits.iter().find(|(r, _)| *r == row).map(|(_, a)| *a))
-    })
-    .flatten()
-    .unwrap_or(device);
-    let list = choices(device);
-    let selected = choice_for(&list, current);
-    let key = match current {
-        Action::Keyboard { modifiers, usage } => Some((modifiers, usage)),
-        _ => None,
-    };
-    if let Some(combo) = ctl(ID_ED_COMBO) {
-        unsafe {
-            SendMessageW(combo, CB_RESETCONTENT, None, None);
-            for (label, _) in &list {
-                let w = wide(label);
-                SendMessageW(combo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-            }
-            SendMessageW(combo, CB_SETCURSEL, Some(WPARAM(selected)), None);
-        }
+/// «Botones y DPI» stacks everything below 760 px (DESIGN.md).
+fn is_stacked(view: HWND) -> bool {
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(view, &mut rc);
     }
-    // Tab order follows z-order: put the editor right after the row.
-    let mut after = ctl(ID_BTN_BADGE0 + row as i32);
-    for id in EDITOR {
-        if let (Some(prev), Some(h)) = (after, ctl(id)) {
-            unsafe {
-                let _ = SetWindowPos(
-                    h,
-                    Some(prev),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-            }
-            after = Some(h);
-        }
+    (rc.right as f32 / devices_view::scale_of(view)) < 760.0
+}
+
+/// The labels of the points in a wide window, the list in a narrow one.
+fn show_button_views(view: HWND, n: usize) {
+    let stacked = is_stacked(view);
+    for i in 0..MAX_BUTTONS {
+        let has = (i as usize) < n;
+        show(ID_DOT0 + i, has);
+        show(ID_ROW0 + i, has && stacked);
+        show(ID_LBL_NAME0 + i, has && !stacked);
+        show(ID_LBL_ACT0 + i, has && !stacked);
+        // One way with Tab: the list when narrow, else the points.
+        set_tabstop(ID_DOT0 + i, !stacked);
     }
-    with_app(|a| {
-        if let Some(m) = a.view.mouse.as_mut() {
-            m.editing = Some(Editing {
-                row,
-                choices: list,
-                selected,
-                key,
-            });
-        }
-    });
-    refresh(view);
-    if let Some(combo) = ctl(ID_ED_COMBO) {
+    show(ID_BTN_HINT, n > 0);
+}
+
+/// Left, centred or right text of a label (`SS_LEFT`, `SS_CENTER`,
+/// `SS_RIGHT`).
+fn set_align(id: i32, align: u32) {
+    if let Some(h) = ctl(id) {
         unsafe {
-            let _ = SetFocus(Some(combo));
+            let style = GetWindowLongW(h, GWL_STYLE) as u32;
+            let new = (style & !0x3) | align;
+            if new != style {
+                SetWindowLongW(h, GWL_STYLE, new as i32);
+                let _ = InvalidateRect(Some(h), None, true);
+            }
         }
     }
 }
 
-/// Closes the editor; with `accept`, records the chosen action.
-fn end_edit(view: HWND, accept: bool) {
+/// Fills the «Comandos» list when the search changed; repaints it so the
+/// button of each command follows the pending changes.
+fn refresh_commands() {
+    let query = ctl(ID_AS_SEARCH).map(get_text).unwrap_or_default();
+    let stale = with_app(|a| {
+        a.view
+            .mouse
+            .as_ref()
+            .map(|m| m.list_query.as_deref() != Some(query.as_str()))
+    })
+    .flatten();
+    let list = ctl(ID_AS_LIST);
+    if stale == Some(true) {
+        let rows = command_rows(&query);
+        if let Some(list) = list {
+            unsafe {
+                SendMessageW(list, LB_RESETCONTENT, None, None);
+                for (i, r) in rows.iter().enumerate() {
+                    // The strings are what screen readers read.
+                    let t = match r {
+                        Some(c) => {
+                            let c = &super::commands::COMMANDS[*c];
+                            format!("{}, {}", c.name, c.keys())
+                        }
+                        None => rows
+                            .get(i + 1)
+                            .copied()
+                            .flatten()
+                            .map(|c| format!("Grupo {}", super::commands::COMMANDS[c].group))
+                            .unwrap_or_default(),
+                    };
+                    let w = wide(&t);
+                    SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+                }
+            }
+        }
+        let n = rows.iter().filter(|r| r.is_some()).count();
+        set(
+            ID_AS_COUNT,
+            &if n == 0 {
+                format!("Sin resultados para «{}»", query.trim())
+            } else {
+                plural(n, "comando", "comandos")
+            },
+        );
+        with_app(|a| {
+            a.view.mouse.as_mut().map(|m| {
+                m.list_rows = rows;
+                m.list_query = Some(query);
+            })
+        });
+    }
+    if let Some(list) = list {
+        unsafe {
+            let _ = InvalidateRect(Some(list), None, false);
+        }
+    }
+}
+
+/// Chooses the button `row` (a point or a row of the list).
+fn choose_button(view: HWND, row: usize) {
+    with_app(|a| {
+        a.view.mouse.as_mut().map(|m| {
+            m.sel = row;
+            m.sel_set = true;
+        })
+    });
+    // No row selected: a click on any command (the same as before
+    // included) changes the selection, so it assigns.
+    if let Some(list) = ctl(ID_AS_LIST) {
+        unsafe {
+            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(usize::MAX)), None);
+        }
+    }
+    refresh(view);
+}
+
+/// Assigns `action` to the chosen button as a pending change: nothing is
+/// written until «Guardar en el ratón…». The focus goes back to its point.
+fn assign(view: HWND, action: Action) {
     let buttons = device_buttons();
     let row = with_app(|a| {
         let m = a.view.mouse.as_mut()?;
-        let e = m.editing.take()?;
-        if accept {
-            let action = match e.choices.get(e.selected).map(|(_, a)| *a) {
-                Some(Some(a)) => Some(a),
-                Some(None) => e
-                    .key
-                    .map(|(modifiers, usage)| Action::Keyboard { modifiers, usage }),
-                None => None,
-            };
-            if let (Some(action), Some(&device)) = (action, buttons.get(e.row)) {
-                upsert(&mut m.edits, e.row, action, device);
-                m.buttons_result = None;
-            }
+        let row = m.sel;
+        let &device = buttons.get(row)?;
+        if locked(row, device) || !crate::protocol::onboard::assignable(action) {
+            return None;
         }
-        Some(e.row)
+        upsert(&mut m.edits, row, action, device);
+        m.buttons_result = None;
+        Some(row)
     })
     .flatten();
     refresh(view);
-    if let Some(h) = row.and_then(|r| ctl(ID_BTN_CHANGE0 + r as i32)) {
+    let point = if is_stacked(view) { ID_ROW0 } else { ID_DOT0 };
+    if let Some(h) = row.and_then(|r| ctl(point + r as i32)) {
         unsafe {
             let _ = SetFocus(Some(h));
         }
+    }
+}
+
+/// The command of the selected row of the list, if it is not a group.
+fn selected_command() -> Option<Action> {
+    let list = ctl(ID_AS_LIST)?;
+    let i = unsafe { SendMessageW(list, LB_GETCURSEL, None, None).0 };
+    let row = with_app(|a| {
+        a.view
+            .mouse
+            .as_ref()
+            .and_then(|m| m.list_rows.get(i as usize).copied())
+    })
+    .flatten()
+    .flatten()?;
+    Some(super::commands::COMMANDS[row].action())
+}
+
+/// A point of the drawing: a 12 px circle (hollow when the button cannot
+/// change), a 2 px ring when chosen, the focus ring outside it.
+fn draw_dot(
+    dis: &DRAWITEMSTRUCT,
+    chosen: bool,
+    locked: bool,
+    behind: Option<(i32, i32, f32, &'static super::mouse_art::Art)>,
+    palette: &Palette,
+    scale: f32,
+) {
+    use windows::Win32::UI::Controls::{ODS_FOCUS, ODS_NOFOCUSRECT};
+    let r = dis.rcItem;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let has = |f: windows::Win32::UI::Controls::ODS_FLAGS| dis.itemState.0 & f.0 != 0;
+    unsafe {
+        let hdc = dis.hDC;
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w, h);
+        let old = SelectObject(mem, bmp.into());
+        let all = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+        panel::fill(mem, all, palette.bg_app);
+        if let Some(mut c) = Canvas::new(mem, scale) {
+            if let Some((x, y, k, art)) = behind {
+                glyph::mouse(&mut c, x as f32, y as f32, k, scale, art, palette);
+                c.origin(0.0, 0.0);
+            }
+            let (uw, uh) = (w as f32 / scale, h as f32 / scale);
+            let (cx, cy) = (uw / 2.0, uh / 2.0);
+            let circle = |r: f32| (cx - r, cy - r, 2.0 * r);
+            if has(ODS_FOCUS) && !has(ODS_NOFOCUSRECT) {
+                let (x, y, d) = circle(13.0);
+                c.stroke_round_rect(x, y, d, d, 13.0, 1.5, palette.focus_ring, true);
+            }
+            if chosen {
+                let (x, y, d) = circle(10.5);
+                c.stroke_round_rect(x, y, d, d, 10.5, 2.0, palette.text_primary, false);
+            }
+            let (x, y, d) = circle(6.0);
+            if locked {
+                c.fill_round_rect(x, y, d, d, 6.0, palette.surface_card);
+                c.stroke_round_rect(x, y, d, d, 6.0, 2.0, palette.text_secondary, false);
+            } else {
+                c.fill_round_rect(x, y, d, d, 6.0, palette.text_primary);
+                c.stroke_round_rect(x, y, d, d, 6.0, 2.0, palette.bg_app, false);
+            }
+        }
+        let _ = BitBlt(hdc, r.left, r.top, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+    }
+}
+
+/// Draws `text` in `rect` (single line, ellipsis), never with an empty
+/// slice (see `panel::draw_shaped`).
+unsafe fn text_at(
+    hdc: HDC,
+    text: &str,
+    mut rect: RECT,
+    font: HFONT,
+    color: Color,
+    flags: DRAW_TEXT_FORMAT,
+) {
+    let mut t: Vec<u16> = text.encode_utf16().collect();
+    if t.is_empty() {
+        return;
+    }
+    unsafe {
+        let old = SelectObject(hdc, font.into());
+        SetTextColor(hdc, COLORREF(color.colorref()));
+        DrawTextW(
+            hdc,
+            &mut t,
+            &mut rect,
+            flags | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
+        SelectObject(hdc, old);
+    }
+}
+
+/// A row of the list of buttons (narrow window): the name at the left, the
+/// action at the right and, when changed, what it replaces below; the
+/// chosen row on `surface.selected` with a `text.primary` border.
+fn draw_button_row(
+    dis: &DRAWITEMSTRUCT,
+    row: &ButtonRow,
+    chosen: bool,
+    palette: &Palette,
+    fonts: &Fonts,
+    scale: f32,
+) {
+    use windows::Win32::UI::Controls::{ODS_FOCUS, ODS_NOFOCUSRECT};
+    let r = dis.rcItem;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let has = |f: windows::Win32::UI::Controls::ODS_FLAGS| dis.itemState.0 & f.0 != 0;
+    let px = |v: f32| (v * scale) as i32;
+    unsafe {
+        let hdc = dis.hDC;
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w, h);
+        let old = SelectObject(mem, bmp.into());
+        let all = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+        panel::fill(mem, all, palette.bg_app);
+        if let Some(c) = Canvas::new(mem, scale) {
+            let (uw, uh) = (w as f32 / scale, h as f32 / scale);
+            if chosen {
+                c.fill_round_rect(4.0, 4.0, uw - 8.0, uh - 8.0, 8.0, palette.surface_selected);
+                c.stroke_round_rect(
+                    4.0,
+                    4.0,
+                    uw - 8.0,
+                    uh - 8.0,
+                    8.0,
+                    1.0,
+                    palette.text_primary,
+                    false,
+                );
+            } else {
+                c.fill_round_rect(4.0, uh - 5.0, uw - 8.0, 1.0, 0.0, palette.border_card);
+            }
+            if has(ODS_FOCUS) && !has(ODS_NOFOCUSRECT) {
+                c.stroke_round_rect(
+                    1.0,
+                    1.0,
+                    uw - 2.0,
+                    uh - 2.0,
+                    9.0,
+                    2.0,
+                    palette.focus_ring,
+                    false,
+                );
+            }
+        }
+        SetBkMode(mem, TRANSPARENT);
+        let line = RECT {
+            left: px(16.0),
+            top: px(4.0),
+            right: w - px(16.0),
+            bottom: px(4.0) + px(36.0),
+        };
+        text_at(
+            mem,
+            &row.name,
+            line,
+            fonts.body,
+            palette.text_secondary,
+            DT_LEFT | DT_VCENTER,
+        );
+        let (font, color) = if row.locked {
+            (fonts.body, palette.text_secondary)
+        } else {
+            (fonts.body_strong, palette.text_primary)
+        };
+        let action = if row.locked {
+            format!("{} · no se cambia", row.action)
+        } else {
+            row.action.clone()
+        };
+        text_at(mem, &action, line, font, color, DT_RIGHT | DT_VCENTER);
+        if let Some(b) = &row.before {
+            let below = RECT {
+                top: line.bottom - px(4.0),
+                bottom: h - px(4.0),
+                ..line
+            };
+            text_at(
+                mem,
+                &format!("Cambiado · antes: {b}"),
+                below,
+                fonts.body,
+                palette.text_notice,
+                DT_LEFT | DT_VCENTER,
+            );
+        }
+        let _ = BitBlt(hdc, r.left, r.top, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+    }
+}
+
+/// Short name of a button for the tags of the «Comandos» list
+/// ("Lateral trasero" -> "Trasero"), like «G4» in G HUB.
+fn short_button(name: &str) -> &str {
+    match name {
+        "Lateral trasero" => "Trasero",
+        "Lateral delantero" => "Delantero",
+        "Central (rueda)" => "Central",
+        "Botón DPI" => "DPI",
+        other => other,
+    }
+}
+
+/// A row of the «Comandos» list: a group header, or the keys (semibold),
+/// the name and, at the right, the buttons that have it (like «G4» in
+/// G HUB). The selected row on `surface.selected` with a `text.primary`
+/// border.
+fn draw_command(dis: &DRAWITEMSTRUCT, palette: &Palette, fonts: &Fonts, scale: f32) {
+    use windows::Win32::UI::Controls::{ODS_FOCUS, ODS_SELECTED};
+    if dis.itemID == u32::MAX {
+        return;
+    }
+    let i = dis.itemID as usize;
+    let Some((rows, buttons)) = with_app(|a| {
+        a.view
+            .mouse
+            .as_ref()
+            .map(|m| (m.list_rows.clone(), m.button_rows.clone()))
+    })
+    .flatten() else {
+        return;
+    };
+    let Some(&row) = rows.get(i) else {
+        return;
+    };
+    let r = dis.rcItem;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let has = |f: windows::Win32::UI::Controls::ODS_FLAGS| dis.itemState.0 & f.0 != 0;
+    let px = |v: f32| (v * scale) as i32;
+    unsafe {
+        let hdc = dis.hDC;
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w.max(1), h.max(1));
+        let old = SelectObject(mem, bmp.into());
+        let all = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+        panel::fill(mem, all, palette.surface_card);
+        SetBkMode(mem, TRANSPARENT);
+        match row {
+            None => {
+                let group = rows
+                    .get(i + 1)
+                    .copied()
+                    .flatten()
+                    .map(|c| super::commands::COMMANDS[c].group.to_uppercase())
+                    .unwrap_or_default();
+                let rect = RECT {
+                    left: px(4.0),
+                    top: px(8.0),
+                    ..all
+                };
+                text_at(
+                    mem,
+                    &group,
+                    rect,
+                    fonts.small,
+                    palette.text_tertiary,
+                    DT_LEFT | DT_VCENTER,
+                );
+            }
+            Some(ci) => {
+                let c = &super::commands::COMMANDS[ci];
+                if let Some(cv) = Canvas::new(mem, scale) {
+                    let (uw, uh) = (w as f32 / scale, h as f32 / scale);
+                    if has(ODS_SELECTED) {
+                        cv.fill_round_rect(
+                            1.0,
+                            1.0,
+                            uw - 2.0,
+                            uh - 2.0,
+                            6.0,
+                            palette.surface_selected,
+                        );
+                        cv.stroke_round_rect(
+                            1.0,
+                            1.0,
+                            uw - 2.0,
+                            uh - 2.0,
+                            6.0,
+                            1.0,
+                            palette.text_primary,
+                            false,
+                        );
+                    } else {
+                        cv.fill_round_rect(0.0, uh - 1.0, uw, 1.0, 0.0, palette.border_card);
+                    }
+                    if has(ODS_FOCUS) {
+                        cv.stroke_round_rect(
+                            2.0,
+                            2.0,
+                            uw - 4.0,
+                            uh - 4.0,
+                            5.0,
+                            1.5,
+                            palette.focus_ring,
+                            true,
+                        );
+                    }
+                }
+                let keys = RECT {
+                    left: px(8.0),
+                    right: px(114.0),
+                    ..all
+                };
+                // Arrows as symbols so the keys fit their column (the
+                // accessible name keeps the words).
+                let shown = c
+                    .keys()
+                    .replace("Flecha derecha", "→")
+                    .replace("Flecha izquierda", "←");
+                text_at(
+                    mem,
+                    &shown,
+                    keys,
+                    fonts.body_strong,
+                    palette.text_primary,
+                    DT_LEFT | DT_VCENTER,
+                );
+                // The buttons that send it now (pending changes included).
+                let label = format!("Atajo {}", c.keys());
+                let tag: Vec<&str> = buttons
+                    .iter()
+                    .filter(|b| b.action == label)
+                    .map(|b| short_button(&b.name))
+                    .collect();
+                let tag = tag.join(", ");
+                let tag_w = if tag.is_empty() { 0 } else { px(76.0) };
+                let name = RECT {
+                    left: px(118.0),
+                    right: w - tag_w - px(8.0),
+                    ..all
+                };
+                text_at(
+                    mem,
+                    c.name,
+                    name,
+                    fonts.body,
+                    palette.text_secondary,
+                    DT_LEFT | DT_VCENTER,
+                );
+                let tag_rect = RECT {
+                    left: w - tag_w - px(6.0),
+                    right: w - px(8.0),
+                    ..all
+                };
+                text_at(
+                    mem,
+                    &tag,
+                    tag_rect,
+                    fonts.small,
+                    palette.text_primary,
+                    DT_RIGHT | DT_VCENTER,
+                );
+            }
+        }
+        let _ = BitBlt(hdc, r.left, r.top, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
     }
 }
 
@@ -5077,7 +5318,6 @@ fn use_profile(view: HWND, name: String) {
         if let Some(m) = a.view.mouse.as_mut() {
             m.using = Some((name.clone(), from));
             m.profile_status = None;
-            m.page = None;
         }
     });
     send_write(view, Write::Use, |key| {
@@ -5158,9 +5398,6 @@ fn new_profile(view: HWND, from_mouse: bool) {
         return;
     };
     let initial = crate::profiles::copy_name(&active, &list);
-    // After creating it, the list shows the page of the new profile.
-    let new_page = texts::page_of(list.len());
-    with_app(|a| a.view.mouse.as_mut().map(|m| m.page = Some(new_page)));
     let (title, body, command): (&str, String, fn(DeviceKey, String) -> Command) = if from_mouse {
         (
             "Guardar como perfil nuevo",
@@ -5231,25 +5468,181 @@ fn confirm_delete(view: HWND, row: usize) {
     );
 }
 
+/// «Perfil …»: a native menu with the actions on the active profile, the
+/// restores and deleting the other profiles (DESIGN.md, revisión
+/// 2026-10-08).
+fn profile_menu(view: HWND) {
+    const RENAME: usize = 1;
+    const SAVE_AS: usize = 2;
+    const REAPPLY: usize = 3;
+    const ORIGINAL: usize = 4;
+    const FACTORY: usize = 5;
+    const ORIGINALS: usize = 6;
+    const DELETE0: usize = 100;
+    let Some((key, list, Some(active))) = profile_list() else {
+        return;
+    };
+    let Some(shared) = super::snapshot() else {
+        return;
+    };
+    let snap = snapshot(&shared, &key);
+    let connected = snap.is_some_and(|s| matches!(s.status, Status::Ok(_)));
+    let busy =
+        with_app(|a| a.view.mouse.as_ref().is_some_and(|m| m.pending.is_some())) != Some(false);
+    let ghub = shared.conflicts.contains(&"Logitech G HUB");
+    let editable = editing_available()
+        && snap
+            .and_then(profile_view)
+            .is_some_and(|v| !v.buttons.is_empty())
+        && matches!(snap.and_then(|s| s.backup.clone()), Some(Ok(_)));
+    let can_write = connected && !busy && !ghub;
+    let row = list.iter().position(|p| p.name == active);
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let item = |id: usize, text: &str, on: bool| {
+            let t = wide(&text.replace('&', "&&"));
+            let flags = if on { MF_STRING } else { MF_STRING | MF_GRAYED };
+            let _ = AppendMenuW(menu, flags, id, PCWSTR(t.as_ptr()));
+        };
+        item(RENAME, &format!("Renombrar «{active}»…"), !busy);
+        item(
+            SAVE_AS,
+            "Guardar como perfil nuevo…",
+            !busy && list.len() < crate::profiles::MAX_PROFILES,
+        );
+        item(REAPPLY, &format!("Volver a aplicar «{active}»"), can_write);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        item(
+            ORIGINAL,
+            "Restaurar perfil original del ratón…",
+            editable && can_write,
+        );
+        item(FACTORY, "Valores de fábrica…", editable && can_write);
+        item(
+            ORIGINALS,
+            "Restaurar originales (deja de aplicar el DPI y la luz de la app)",
+            connected && !busy,
+        );
+        if list.len() > 1 {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            item(0, "Eliminar un perfil (el activo no se puede)", false);
+            for (i, p) in list.iter().enumerate().filter(|(_, p)| p.name != active) {
+                item(DELETE0 + i, &format!("Eliminar «{}»…", p.name), !busy);
+            }
+        }
+        // Below the button, from its left edge.
+        let mut r = RECT::default();
+        if let Some(b) = ctl(ID_PRF_MENU) {
+            let _ = GetWindowRect(b, &mut r);
+        }
+        let chosen = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+            r.left,
+            r.bottom,
+            None,
+            view,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        chosen
+    };
+    match chosen {
+        RENAME => {
+            if let Some(i) = row {
+                rename_profile(view, i);
+            }
+        }
+        SAVE_AS => new_profile(view, true),
+        // With changes pending, the same question as using another profile.
+        REAPPLY => {
+            if let Some(i) = row {
+                request_use(view, i);
+            }
+        }
+        ORIGINAL => confirm_restore(view, Source::Original),
+        FACTORY => confirm_restore(view, Source::Factory),
+        ORIGINALS => restore_originals(view),
+        d if d >= DELETE0 => confirm_delete(view, d - DELETE0),
+        _ => {}
+    }
+}
+
+/// «Restaurar originales»: the app stops applying its DPI and light when
+/// the mouse connects; nothing is written to the mouse.
+fn restore_originals(view: HWND) {
+    let Some(shared) = super::snapshot() else {
+        return;
+    };
+    let key = with_app(|a| {
+        a.view.mouse.as_mut().map(|m| {
+            m.pending = Some((shared.seq, Pending::Restore));
+            m.restore_text = None;
+            m.applied = None;
+            m.invalid = false;
+            m.key.clone()
+        })
+    })
+    .flatten();
+    if let Some(key) = key {
+        send(Command::Restore(key));
+    }
+    refresh(view);
+}
+
 // ---------------------------------------------------------------------------
-// «Juegos y programas».
-
-/// "Perfil de PEAK.exe: Juego" (accessible name) -> "Perfil: Juego ▾".
-fn sel_label(name: &str) -> String {
-    let profile = name.rsplit_once(": ").map(|(_, p)| p).unwrap_or("");
-    format!("Perfil: {profile} ▾")
-}
-
-fn unanswered(i: usize) -> Option<String> {
-    let shared = super::snapshot()?;
-    let key = with_app(|a| a.view.mouse.as_ref().map(|m| m.key.clone())).flatten()?;
-    snapshot(&shared, &key)?.unanswered.get(i).cloned()
-}
+// «Avanzado»: programs linked to the active profile.
 
 fn program(i: usize) -> Option<String> {
     let shared = super::snapshot()?;
     let key = with_app(|a| a.view.mouse.as_ref().map(|m| m.key.clone())).flatten()?;
-    Some(snapshot(&shared, &key)?.programs.get(i)?.exe.clone())
+    let s = snapshot(&shared, &key)?;
+    linked_programs(&s.programs, s.active_profile.as_deref())
+        .get(i)
+        .cloned()
+}
+
+/// «Vincular programa…»: links it to the active profile. A program has a
+/// single profile: if another one had it, it moves here, and the dialog
+/// says so first.
+fn link_program(view: HWND, exe: String) {
+    let Some((key, _, Some(active))) = profile_list() else {
+        return;
+    };
+    let path = crate::games::normalize(&exe).unwrap_or_else(|| exe.clone());
+    let current = super::snapshot().and_then(|s| {
+        snapshot(&s, &key)?
+            .programs
+            .iter()
+            .find(|p| p.exe == path)
+            .map(|p| p.profile.clone())
+    });
+    let name = crate::games::display_name(&path);
+    match current {
+        Some(Some(p)) if p == active => {
+            let text = format!("{name} ya está vinculado a «{active}».");
+            with_app(|a| {
+                a.view
+                    .mouse
+                    .as_mut()
+                    .map(|m| m.games_status = Some((true, text)))
+            });
+            refresh(view);
+        }
+        Some(Some(other)) => super::confirm::open(
+            view,
+            &format!("¿Vincular {name} a «{active}»?"),
+            &format!(
+                "Ahora usa el perfil «{other}». Un programa solo puede tener un perfil: pasará a «{active}».\n\n{path}"
+            ),
+            "Vincular",
+            Box::new(move || send_games(view, Command::SetProgram(key, exe, Some(active)))),
+        ),
+        _ => send_games(view, Command::SetProgram(key, exe, Some(active))),
+    }
 }
 
 /// A change to the programs list; its result is shown in the section.
@@ -5315,32 +5708,6 @@ pub(crate) fn create_profile_for(view: HWND, exe: String) {
                 view,
                 Command::CreateGameProfile(key, exe, text.trim().to_string()),
             )
-        }),
-    );
-}
-
-/// «Perfil: X ▾» of a program: one button per profile and «No cambiar de
-/// perfil», to change which profile it uses.
-pub(crate) fn choose_profile_for(view: HWND, exe: String) {
-    let Some((key, list, _)) = profile_list() else {
-        return;
-    };
-    let names: Vec<String> = list.iter().map(|p| p.name.clone()).collect();
-    let labels = names.clone();
-    let mut choices: Vec<&str> = labels.iter().map(String::as_str).collect();
-    choices.push("No cambiar de perfil");
-    let name = crate::games::display_name(&exe);
-    super::confirm::open_choices(
-        view,
-        &format!("Perfil para {name}"),
-        &format!(
-            "{exe}\n\nSe usará al abrirlo, mientras OpenPeripheral esté abierto. Si cambias de carpeta el programa, habrá que volver a asociarlo. «Cancelar» es «Ahora no»."
-        ),
-        &choices,
-        None,
-        Box::new(move |choice, _| {
-            let profile = names.get(choice).cloned();
-            send_games(view, Command::SetProgram(key, exe, profile));
         }),
     );
 }
@@ -5549,21 +5916,23 @@ fn update_pick(view: HWND, f: impl FnOnce(&mut Pick)) {
 /// Handles WM_COMMAND while the page is open. Returns false if not handled.
 pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool {
     match (id, code) {
-        // Esc: closes the row editor first, then leaves the page.
-        (2, _) => {
-            if with_app(|a| a.view.mouse.as_ref().is_some_and(|m| m.editing.is_some()))
-                == Some(true)
-            {
-                end_edit(view, false);
-            } else {
-                request_leave(view);
-            }
-        }
+        // Esc leaves the page (asking first with changes pending).
+        (2, _) => request_leave(view),
         // Enter: "Probar" of the DPI or the light when its field has the focus.
         (1, _) => {
             let f = Some(unsafe { GetFocus() });
             if f == ctl(ID_DPI_EDIT) {
                 apply(view);
+            } else if f == ctl(ID_AS_LIST) {
+                if let Some(a) = selected_command() {
+                    assign(view, a);
+                }
+            } else if f == ctl(ID_AS_KEY) {
+                if let Some((modifiers, usage)) =
+                    with_app(|a| a.view.mouse.as_ref().and_then(|m| m.as_key)).flatten()
+                {
+                    assign(view, Action::Keyboard { modifiers, usage });
+                }
             } else if f == ctl(ID_HEX_EDIT) {
                 try_light(view);
             } else {
@@ -5573,41 +5942,69 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
                 }
             }
         }
-        (ID_BACK, BN_CLICKED) => {
-            with_app(|a| a.view.mouse.as_mut().map(|m| m.editing = None));
-            request_leave(view);
+        (ID_BACK, BN_CLICKED) => request_leave(view),
+        (d, BN_CLICKED) if in_group(d, ID_DOT0, MAX_BUTTONS).is_some() => {
+            choose_button(view, (d - ID_DOT0) as usize)
         }
-        (c, BN_CLICKED) if (ID_BTN_CHANGE0 + 1..ID_BTN_CHANGE0 + MAX_BUTTONS).contains(&c) => {
-            begin_edit(view, (c - ID_BTN_CHANGE0) as usize)
+        (r, BN_CLICKED) if in_group(r, ID_ROW0, MAX_BUTTONS).is_some() => {
+            choose_button(view, (r - ID_ROW0) as usize)
         }
-        (ID_ED_COMBO, CBN_SELCHANGE) => {
-            let sel = ctl(ID_ED_COMBO)
-                .map(|h| unsafe { SendMessageW(h, CB_GETCURSEL, None, None).0 })
-                .unwrap_or(-1);
-            with_app(|a| {
-                if let Some(e) = a.view.mouse.as_mut().and_then(|m| m.editing.as_mut()) {
-                    if sel >= 0 && (sel as usize) < e.choices.len() {
-                        e.selected = sel as usize;
-                    }
+        // Tabs of «Asignaciones»: the arrows also choose (nothing is written).
+        (t, BN_CLICKED | BN_SETFOCUS)
+            if in_group(t, ID_AS_TAB0, AS_TABS.len() as i32).is_some() =>
+        {
+            let tab = AS_TABS[(t - ID_AS_TAB0) as usize].0;
+            let changed = with_app(|a| {
+                a.view.mouse.as_mut().map(|m| {
+                    let changed = m.as_tab != tab;
+                    m.as_tab = tab;
+                    changed
+                })
+            })
+            .flatten();
+            if changed == Some(true) {
+                refresh(view);
+            }
+            devices_view::ensure_visible(view, HWND(lparam.0 as *mut _));
+        }
+        (ID_AS_SEARCH, EN_CHANGE) => refresh_commands(),
+        // A click on a command assigns it; the arrows only select (Enter or
+        // a double click assigns).
+        (ID_AS_LIST, LBN_SELCHANGE) => {
+            if unsafe { GetKeyState(VK_LBUTTON.0 as i32) } < 0 {
+                if let Some(a) = selected_command() {
+                    assign(view, a);
                 }
-            });
-            refresh(view);
+            }
         }
-        (ID_ED_KEY_CLEAR, BN_CLICKED) => {
-            with_app(|a| {
-                if let Some(e) = a.view.mouse.as_mut().and_then(|m| m.editing.as_mut()) {
-                    e.key = None;
-                }
-            });
+        (ID_AS_LIST, LBN_DBLCLK) => {
+            if let Some(a) = selected_command() {
+                assign(view, a);
+            }
+        }
+        (ID_AS_LIST, LBN_SETFOCUS) => devices_view::ensure_visible(view, HWND(lparam.0 as *mut _)),
+        (ID_AS_KEY_ASSIGN, BN_CLICKED) => {
+            if let Some((modifiers, usage)) =
+                with_app(|a| a.view.mouse.as_ref().and_then(|m| m.as_key)).flatten()
+            {
+                assign(view, Action::Keyboard { modifiers, usage });
+            }
+        }
+        (ID_AS_KEY_CLEAR, BN_CLICKED) => {
+            with_app(|a| a.view.mouse.as_mut().map(|m| m.as_key = None));
             refresh(view);
-            if let Some(h) = ctl(ID_ED_KEY) {
+            if let Some(h) = ctl(ID_AS_KEY) {
                 unsafe {
                     let _ = SetFocus(Some(h));
                 }
             }
         }
-        (ID_ED_OK, BN_CLICKED) => end_edit(view, true),
-        (ID_ED_CANCEL, BN_CLICKED) => end_edit(view, false),
+        (m, BN_CLICKED) if in_group(m, ID_AS_MOUSE0, MOUSE_ACTIONS.len() as i32).is_some() => {
+            assign(
+                view,
+                Action::Mouse(MOUSE_ACTIONS[(m - ID_AS_MOUSE0) as usize]),
+            )
+        }
         (ID_BAR_DISCARD, BN_CLICKED) => discard(view),
         // Single-choice groups: focus moved by the arrows also chooses.
         (e, BN_CLICKED | BN_SETFOCUS) if in_group(e, ID_EFFECT0, N_EFFECTS).is_some() => {
@@ -5641,55 +6038,26 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
         }
         (ID_LIGHT_TRY, BN_CLICKED) => try_light(view),
         (ID_BAR_SAVE, BN_CLICKED) => confirm_save(view),
-        (u, BN_CLICKED) if in_group(u, ID_PRF_USE0, MAX_ROWS).is_some() => {
-            request_use(view, (u - ID_PRF_USE0) as usize)
-        }
-        (d, BN_CLICKED) if in_group(d, ID_PRF_DEL0, MAX_ROWS).is_some() => {
-            confirm_delete(view, (d - ID_PRF_DEL0) as usize)
-        }
-        (r, BN_CLICKED) if in_group(r, ID_PRF_REN0, MAX_ROWS).is_some() => {
-            rename_profile(view, (r - ID_PRF_REN0) as usize)
+        (p, BN_CLICKED) if in_group(p, ID_PILL0, MAX_ROWS).is_some() => {
+            // The active pill does nothing: it is already in the mouse.
+            let i = (p - ID_PILL0) as usize;
+            let active = with_app(|a| {
+                a.view
+                    .mouse
+                    .as_ref()
+                    .and_then(|m| m.pills.get(i).map(|x| x.1))
+            })
+            .flatten();
+            if active == Some(false) {
+                request_use(view, i);
+            }
         }
         (ID_PRF_NEW, BN_CLICKED) => new_profile(view, false),
-        (ID_PRF_PREV | ID_PRF_NEXT, BN_CLICKED) => {
-            with_app(|a| {
-                a.view.mouse.as_mut().map(|m| {
-                    m.page = Some(if id == ID_PRF_PREV {
-                        m.page_shown.saturating_sub(1)
-                    } else {
-                        m.page_shown + 1
-                    })
-                })
-            });
-            refresh(view);
-        }
-        (ID_GAM_AUTO | ID_GAM_ASK, BN_CLICKED) => {
-            let checked = |id: i32| {
-                ctl(id).is_some_and(|h| unsafe { SendMessageW(h, BM_GETCHECK, None, None).0 == 1 })
-            };
-            if let Some((key, ..)) = profile_list() {
-                send_games(
-                    view,
-                    Command::SetGameOptions(key, checked(ID_GAM_AUTO), checked(ID_GAM_ASK)),
-                );
-            }
-        }
-        (c, BN_CLICKED) if in_group(c, ID_GAM_CFG0, MAX_NEW).is_some() => {
-            if let Some(exe) = unanswered((c - ID_GAM_CFG0) as usize) {
-                create_profile_for(view, exe);
-            }
-        }
-        (v, BN_CLICKED) if in_group(v, ID_GAM_NEVER0, MAX_NEW).is_some() => {
-            if let (Some((key, ..)), Some(exe)) =
-                (profile_list(), unanswered((v - ID_GAM_NEVER0) as usize))
-            {
-                send_games(view, Command::SetProgram(key, exe, None));
-            }
-        }
-        (q, BN_CLICKED) if in_group(q, ID_GAM_SEL0, MAX_PROGS).is_some() => {
-            if let Some(exe) = program((q - ID_GAM_SEL0) as usize) {
-                choose_profile_for(view, exe);
-            }
+        (ID_PRF_MENU, BN_CLICKED) => profile_menu(view),
+        // Tabs: focus moved by the arrows also chooses (nothing is written).
+        (t, BN_CLICKED | BN_SETFOCUS) if in_group(t, ID_TAB0, TABS.len() as i32).is_some() => {
+            select_tab(view, TABS[(t - ID_TAB0) as usize].0);
+            devices_view::ensure_visible(view, HWND(lparam.0 as *mut _));
         }
         (d, BN_CLICKED) if in_group(d, ID_GAM_DEL0, MAX_PROGS).is_some() => {
             if let (Some((key, ..)), Some(exe)) =
@@ -5700,26 +6068,17 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
         }
         (ID_GAM_ADD, BN_CLICKED) => {
             if let Some(exe) = pick_exe(view) {
-                create_profile_for(view, exe);
+                link_program(view, exe);
             }
-        }
-        (ID_GAM_UNREG, BN_CLICKED) => {
-            let r = crate::platform::toast::unregister();
-            let status = match r {
-                Ok(()) => (true, "Avisos de Windows quitados: se borró el registro de OpenPeripheral para las notificaciones.".to_string()),
-                Err(e) => (false, format!("Error: no se pudieron quitar los avisos ({e}).")),
-            };
-            with_app(|a| a.view.mouse.as_mut().map(|m| m.games_status = Some(status)));
-            refresh(view);
         }
         (ID_PRF_SAVEAS, BN_CLICKED) => new_profile(view, true),
         (ID_PRF_REAPPLY, BN_CLICKED) => {
-            if let Some((_, _, Some(active))) = profile_list() {
-                use_profile(view, active);
+            if let Some((_, list, Some(active))) = profile_list() {
+                if let Some(i) = list.iter().position(|p| p.name == active) {
+                    request_use(view, i);
+                }
             }
         }
-        (ID_PROFILE_RESTORE, BN_CLICKED) => confirm_restore(view, Source::Original),
-        (ID_FACTORY, BN_CLICKED) => confirm_restore(view, Source::Factory),
         (ID_APPLY, BN_CLICKED) => apply(view),
         (ID_MINUS | ID_PLUS, BN_CLICKED) => {
             if let Some(shared) = super::snapshot() {
@@ -5734,25 +6093,6 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
         (p, BN_CLICKED) if (ID_PRESET0..ID_PRESET0 + PRESETS.len() as i32).contains(&p) => {
             set(ID_DPI_EDIT, &PRESETS[(p - ID_PRESET0) as usize].to_string());
         }
-        (ID_RST_BTN, BN_CLICKED) => {
-            let Some(shared) = super::snapshot() else {
-                return true;
-            };
-            let key = with_app(|a| {
-                a.view.mouse.as_mut().map(|m| {
-                    m.pending = Some((shared.seq, Pending::Restore));
-                    m.restore_text = None;
-                    m.applied = None;
-                    m.invalid = false;
-                    m.key.clone()
-                })
-            })
-            .flatten();
-            if let Some(key) = key {
-                send(Command::Restore(key));
-            }
-            refresh(view);
-        }
         (ID_DPI_EDIT, EN_CHANGE) => {
             with_app(|a| {
                 if let Some(m) = a.view.mouse.as_mut() {
@@ -5761,7 +6101,7 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
             });
             refresh(view);
         }
-        (ID_ED_COMBO, CBN_SETFOCUS) | (_, BN_SETFOCUS) | (_, EN_SETFOCUS) => {
+        (_, BN_SETFOCUS) | (_, EN_SETFOCUS) => {
             devices_view::ensure_visible(view, HWND(lparam.0 as *mut _))
         }
         _ => return false,
@@ -5773,6 +6113,28 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
 mod tests {
     use super::*;
 
+    #[test]
+    fn advanced_lists_only_the_programs_of_the_active_profile() {
+        use crate::games::Program;
+        let p = |exe: &str, profile: Option<&str>| Program {
+            exe: exe.into(),
+            profile: profile.map(str::to_string),
+        };
+        let programs = [
+            p(r"c:\juegos\a.exe", Some("Juego")),
+            p(r"c:\juegos\b.exe", None),
+            p(r"c:\c.exe", Some("Trabajo")),
+            p(r"c:\d.exe", Some("Juego")),
+        ];
+        assert_eq!(
+            linked_programs(&programs, Some("Juego")),
+            vec![r"c:\juegos\a.exe".to_string(), r"c:\d.exe".to_string()]
+        );
+        // «No preguntar más» (no profile) is never linked; no active: none.
+        assert!(linked_programs(&programs, None).is_empty());
+        assert!(linked_programs(&programs, Some("Otro")).is_empty());
+    }
+
     const G305: DpiRange = DpiRange::Range {
         min: 200,
         max: 12000,
@@ -5780,21 +6142,45 @@ mod tests {
     };
 
     #[test]
-    fn action_choices() {
-        let raw = Action::Raw([0x90, 0x0c, 0, 0]);
-        let list = choices(raw);
-        assert_eq!(list.len(), 7);
-        assert_eq!(list[1].0, "Clics y navegación: Clic derecho");
-        assert_eq!(list[5], ("Otras: Atajo de teclado…".to_string(), None));
-        assert_eq!(list[6].1, Some(raw));
-        assert_eq!(choice_for(&list, raw), 6);
-        assert_eq!(choice_for(&list, Action::Mouse(0x08)), 3);
-        let key = Action::Keyboard {
+    fn rows_of_the_buttons_show_pending_changes_and_locks() {
+        let dpi = Action::Raw([0x90, 0x0c, 0, 0]);
+        let buttons = [
+            Action::Mouse(0x01),
+            Action::Mouse(0x02),
+            Action::Mouse(0x04),
+            Action::Mouse(0x08),
+            Action::Mouse(0x10),
+            dpi,
+        ];
+        let ctrl_c = Action::Keyboard {
             modifiers: 1,
-            usage: 0x19,
+            usage: 0x06,
         };
-        assert_eq!(choices(key).len(), 6);
-        assert_eq!(choice_for(&choices(key), key), 5);
+        let rows = button_rows(&buttons, &[(3, ctrl_c)]);
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[3].name, "Lateral trasero");
+        assert_eq!(rows[3].action, "Atajo Ctrl + C");
+        assert_eq!(rows[3].before.as_deref(), Some("Atrás"));
+        assert!(rows[4].before.is_none());
+        // The left button and the DPI cycle cannot change; a click can.
+        assert!(rows[0].locked && rows[5].locked);
+        assert!(!rows[1].locked && !rows[3].locked);
+        assert!(locked(0, Action::Mouse(0x02)));
+        assert!(!locked(5, ctrl_c));
+    }
+
+    #[test]
+    fn command_list_has_a_header_per_group() {
+        let all = command_rows("");
+        let headers = all.iter().filter(|r| r.is_none()).count();
+        assert_eq!(headers, 5);
+        assert_eq!(all[0], None);
+        assert_eq!(all.len(), super::super::commands::COMMANDS.len() + headers);
+        // A search keeps only the groups with results.
+        let pegar = command_rows("pegar");
+        assert_eq!(pegar.len(), 2);
+        assert_eq!(pegar[0], None);
+        assert!(command_rows("xyzzy").is_empty());
     }
 
     #[test]
@@ -5817,7 +6203,9 @@ mod tests {
         assert_eq!(capture(VK_TAB.0, false, false, false, false), None);
         assert_eq!(capture(VK_ESCAPE.0, true, false, false, false), None);
         assert_eq!(capture(VK_CONTROL.0, true, false, false, false), None);
-        assert_eq!(capture(0x0d, false, false, false, true), Some((0x08, 0x28)));
+        // Nothing with the Windows key.
+        assert_eq!(capture(0x0d, false, false, false, true), None);
+        assert_eq!(capture(0x44, true, false, false, true), None);
         let (m, u) = capture(0x56, true, true, false, false).unwrap();
         assert_eq!(text::shortcut(m, u), "Ctrl + Mayús + V");
         assert!(crate::protocol::onboard::assignable(Action::Keyboard {

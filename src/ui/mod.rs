@@ -6,11 +6,14 @@
 pub mod text;
 pub mod theme;
 
+mod app_settings;
+mod commands;
 mod confirm;
 mod devices_view;
 mod glyph;
 mod icon;
 mod light;
+mod mouse_art;
 mod mouse_settings;
 mod panel;
 mod profiles;
@@ -49,6 +52,7 @@ const ID_OPEN: usize = 1;
 const ID_REFRESH: usize = 2;
 const ID_AUTOSTART: usize = 3;
 const ID_EXIT: usize = 4;
+const ID_SETTINGS: usize = 5;
 const ID_DEVICE_BASE: usize = 1000;
 /// Tray profile entries: `ID_PROFILE_BASE + device * 8 + profile`.
 const ID_PROFILE_BASE: usize = 2000;
@@ -142,7 +146,7 @@ fn tray_update(hwnd: HWND, shared: &Shared) {
         failed.then_some((to, from))
     })
     .flatten();
-    if let Some((to, from)) = failed {
+    if let (Some((to, from)), true) = (failed, shared.general.notifications) {
         balloon(
             hwnd,
             &format!("No se pudo cambiar a «{to}»"),
@@ -178,6 +182,11 @@ fn game_notices(hwnd: HWND, shared: &Shared) {
     }) else {
         return;
     };
+    // With notifications off, new games still appear in «Ajustes» and
+    // failures in the mouse page.
+    if !shared.general.notifications {
+        return;
+    }
     if let (true, Some((key, exe))) = (asks, &shared.ask) {
         ask_toast(hwnd, shared, key, exe);
     }
@@ -242,40 +251,67 @@ fn toast_clicked(arg: &str) {
     };
     let key = crate::devices::DeviceKey(key.to_string());
     match action {
-        "configurar" => {
-            open_mouse_settings(key.clone());
-            let page = with_app(|a| {
-                (
-                    devices_view::hwnd_of(&a.view),
-                    a.view.mouse.as_ref().map(|m| m.key.clone()),
-                )
-            });
-            if let Some((Some(view), Some(k))) = page {
-                if k == key {
-                    mouse_settings::create_profile_for(view, exe.to_string());
-                }
-            }
-        }
+        "configurar" => configure_game(key, exe),
         "no-preguntar" => send(Command::SetProgram(key, exe.to_string(), None)),
         // «Ahora no»: asked again next time; it stays in the page's list.
         _ => {}
     }
 }
 
-/// Opens the settings page of a mouse (tray «Editar perfiles…»). If another
-/// mouse's page is open, it stays: its unsaved changes are never dropped.
-fn open_mouse_settings(key: crate::devices::DeviceKey) {
-    devices_view::open();
-    let Some((Some(view), current)) = with_app(|a| {
+/// «Configurar…» of a new game (notification or «Ajustes»): the mouse page
+/// with a new profile for it.
+pub(crate) fn configure_game(key: crate::devices::DeviceKey, exe: &str) {
+    open_mouse_settings(key.clone());
+    let page = with_app(|a| {
         (
             devices_view::hwnd_of(&a.view),
             a.view.mouse.as_ref().map(|m| m.key.clone()),
         )
+    });
+    if let Some((Some(view), Some(k))) = page {
+        if k == key {
+            mouse_settings::create_profile_for(view, exe.to_string());
+        }
+    }
+}
+
+/// Opens the settings page of a mouse (tray «Editar perfiles…»). If another
+/// mouse's page is open, it stays: its unsaved changes are never dropped.
+/// The «Ajustes» page has nothing unsaved: it closes.
+fn open_mouse_settings(key: crate::devices::DeviceKey) {
+    devices_view::open();
+    let Some((Some(view), current, settings)) = with_app(|a| {
+        (
+            devices_view::hwnd_of(&a.view),
+            a.view.mouse.as_ref().map(|m| m.key.clone()),
+            a.view.settings.is_some(),
+        )
     }) else {
         return;
     };
+    if settings {
+        app_settings::leave(view);
+    }
     if current.is_none() {
         mouse_settings::enter(view, key);
+    }
+}
+
+/// Tray «Ajustes…»: the «Ajustes» page, unless a mouse page is open (its
+/// unsaved changes are never dropped).
+fn open_app_settings() {
+    devices_view::open();
+    let Some((Some(view), mouse, settings)) = with_app(|a| {
+        (
+            devices_view::hwnd_of(&a.view),
+            a.view.mouse.is_some(),
+            a.view.settings.is_some(),
+        )
+    }) else {
+        return;
+    };
+    if !mouse && !settings {
+        app_settings::enter(view);
     }
 }
 
@@ -354,6 +390,7 @@ fn show_menu(hwnd: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN, w!("&Abrir OpenPeripheral"));
         let _ = AppendMenuW(menu, MF_STRING, ID_REFRESH, w!("Ac&tualizar ahora"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("A&justes…"));
         let check = if system::autostart_enabled() {
             MF_CHECKED
         } else {
@@ -414,6 +451,7 @@ fn on_command(id: usize) {
     match id {
         ID_OPEN => devices_view::open(),
         ID_REFRESH => send(Command::Refresh),
+        ID_SETTINGS => open_app_settings(),
         ID_AUTOSTART => {
             let _ = system::set_autostart(!system::autostart_enabled());
         }
@@ -442,6 +480,7 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
         }
         WM_APP_UPDATE => {
             if let Some(shared) = snapshot() {
+                theme::set_choice(shared.general.theme);
                 tray_update(hwnd, &shared);
                 game_notices(hwnd, &shared);
             }

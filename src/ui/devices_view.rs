@@ -3,6 +3,7 @@
 //! Created when opened and destroyed when closed; GDI+ and fonts live only
 //! while it exists, so the idle cost of the app does not change.
 
+use super::app_settings;
 use super::glyph::GdiPlus;
 use super::mouse_settings;
 use super::panel::{self, Ctx, Fonts, ID_EMPTY_REFRESH, ID_RETRY, ID_SETTINGS, PanelKind};
@@ -23,6 +24,8 @@ use windows::core::{PCWSTR, w};
 const CLASS: PCWSTR = w!("OpenPeripheral.Devices");
 const PANEL_CLASS: PCWSTR = w!("OpenPeripheral.Panel");
 const ID_REFRESH: i32 = 201;
+/// «Ajustes» in the header: the app-wide settings page.
+const ID_APP_SETTINGS: i32 = 202;
 
 /// Layout constants in design units (96 dpi).
 const MAX_CONTENT: f32 = 1080.0;
@@ -40,8 +43,11 @@ pub(crate) struct State {
     pub(super) shared: Shared,
     pub(super) scroll: i32,
     refresh: Option<HWND>,
+    settings_button: Option<HWND>,
     /// The "Ajustes del ratón" page, when it replaces the device grid.
     pub(super) mouse: Option<mouse_settings::MouseState>,
+    /// The «Ajustes» page, when it replaces the device grid.
+    pub(super) settings: Option<app_settings::SettingsState>,
 }
 
 impl Default for State {
@@ -55,7 +61,9 @@ impl Default for State {
             shared: Shared::default(),
             scroll: 0,
             refresh: None,
+            settings_button: None,
             mouse: None,
+            settings: None,
         }
     }
 }
@@ -157,14 +165,14 @@ pub(crate) fn open() {
     });
     theme::apply_title_bar(hwnd, &palette);
     unsafe {
-        // Client area of the design's width (1080 content + margins, 3
-        // columns), clamped to the work area of the monitor.
+        // Client area of the design (1440×900, so «Ajustes del ratón» shows
+        // its three panels), clamped to the work area of the monitor.
         let s = dpi as i32;
         let mut r = RECT {
             left: 0,
             top: 0,
-            right: 1144 * s / 96,
-            bottom: 720 * s / 96,
+            right: 1440 * s / 96,
+            bottom: 900 * s / 96,
         };
         let _ = AdjustWindowRectExForDpi(&mut r, style, false, WS_EX_CONTROLPARENT, dpi);
         let mut mi = MONITORINFO {
@@ -195,7 +203,27 @@ pub(crate) fn open() {
             None,
         )
         .ok();
-        with_app(|a| a.view.refresh = refresh);
+        let settings = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!("Ajustes de OpenPeripheral"),
+            WINDOW_STYLE(
+                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | (BS_OWNERDRAW | BS_NOTIFY) as u32,
+            ),
+            0,
+            0,
+            0,
+            0,
+            Some(hwnd),
+            Some(HMENU(ID_APP_SETTINGS as isize as *mut _)),
+            Some(instance()),
+            None,
+        )
+        .ok();
+        with_app(|a| {
+            a.view.refresh = refresh;
+            a.view.settings_button = settings;
+        });
     }
     refresh();
     unsafe {
@@ -295,9 +323,32 @@ pub(crate) fn refresh() {
     let Some(shared) = super::snapshot() else {
         return;
     };
+    // The theme of «Ajustes» (or of Windows) may have changed.
+    let palette = theme::current();
+    let rethemed = with_app(|a| a.view.palette) != Some(palette);
+    if rethemed {
+        with_app(|a| a.view.palette = palette);
+        theme::apply_title_bar(view, &palette);
+    }
+    let redraw_all = || unsafe {
+        let _ = RedrawWindow(
+            Some(view),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE,
+        );
+    };
     if with_app(|a| a.view.mouse.is_some()) == Some(true) {
         with_app(|a| a.view.shared = shared.clone());
         mouse_settings::refresh(view);
+        if rethemed {
+            redraw_all();
+        }
+        return;
+    }
+    if with_app(|a| a.view.settings.is_some()) == Some(true) {
+        with_app(|a| a.view.shared = shared.clone());
+        app_settings::refresh(view);
         return;
     }
     let kinds = panel::panels_for(&shared);
@@ -410,6 +461,10 @@ pub(super) fn relayout(view: HWND) {
         relayout_mouse(view);
         return;
     }
+    if with_app(|a| a.view.settings.is_some()) == Some(true) {
+        relayout_settings(view);
+        return;
+    }
     let Some((panels, shared, palette, fonts, scroll)) = with_app(|a| {
         (
             a.view.panels.clone(),
@@ -474,6 +529,7 @@ pub(super) fn relayout(view: HWND) {
         }
     }
     let refresh_w = panel::button_width(&ctx, "Actualizar") + (8.0 * g.scale) as i32;
+    let settings_w = panel::button_width(&ctx, "Ajustes") + (8.0 * g.scale) as i32;
     unsafe {
         ReleaseDC(Some(view), hdc);
     }
@@ -499,12 +555,33 @@ pub(super) fn relayout(view: HWND) {
         if now.right != rc.right {
             return;
         }
+        // «Actualizar» and then «Ajustes», at the right of the title.
+        let bh = ((if g.compact { 44.0 } else { 36.0 } + 8.0) * g.scale) as i32;
+        let by = g.top + (header_height(&g) - bh) / 2 - scroll;
+        let right = g.left + g.avail + (4.0 * g.scale) as i32;
+        let sx = right - settings_w;
+        if let Some(Some(b)) = with_app(|a| a.view.settings_button) {
+            let _ = SetWindowPos(
+                b,
+                None,
+                sx,
+                by,
+                settings_w,
+                bh,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
         if let Some(Some(b)) = with_app(|a| a.view.refresh) {
-            let bw = refresh_w;
-            let bh = ((if g.compact { 44.0 } else { 36.0 } + 8.0) * g.scale) as i32;
-            let bx = g.left + g.avail - bw + (4.0 * g.scale) as i32;
-            let by = g.top + (header_height(&g) - bh) / 2 - scroll;
-            let _ = SetWindowPos(b, None, bx, by, bw, bh, SWP_NOZORDER | SWP_NOACTIVATE);
+            let bx = sx - refresh_w;
+            let _ = SetWindowPos(
+                b,
+                None,
+                bx,
+                by,
+                refresh_w,
+                bh,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
         for ((kind, h), r) in panels.iter().zip(&rects) {
             let (w, ht) = (r.right - r.left, r.bottom - r.top);
@@ -551,6 +628,34 @@ pub(super) fn relayout(view: HWND) {
 /// The mouse page's scrolling content window and fixed bar.
 fn mouse_windows() -> Option<(HWND, HWND, i32)> {
     with_app(|a| a.view.mouse.as_ref().map(|m| (m.content, m.bar, m.bar_h))).flatten()
+}
+
+/// The «Ajustes» page: its controls are children of the view.
+fn relayout_settings(view: HWND) {
+    let g = geometry(view);
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(view, &mut rc);
+    }
+    let scroll = with_app(|a| a.view.scroll).unwrap_or(0);
+    let height = app_settings::layout(view, &g, scroll);
+    let clamped = scroll.clamp(0, (height - rc.bottom).max(0));
+    if clamped != scroll {
+        with_app(|a| a.view.scroll = clamped);
+        app_settings::layout(view, &g, clamped);
+    }
+    unsafe {
+        let si = SCROLLINFO {
+            cbSize: size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+            nMin: 0,
+            nMax: height - 1,
+            nPage: rc.bottom.max(0) as u32,
+            nPos: clamped,
+            ..Default::default()
+        };
+        SetScrollInfo(view, SB_VERT, &si, true);
+    }
 }
 
 fn relayout_mouse(view: HWND) {
@@ -612,7 +717,11 @@ pub(super) fn clear_devices_page(view: HWND) {
             let _ = DestroyWindow(h);
         }
     }
-    if let Some(Some(b)) = with_app(|a| a.view.refresh) {
+    for b in with_app(|a| [a.view.refresh, a.view.settings_button])
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+    {
         unsafe {
             let _ = ShowWindow(b, SW_HIDE);
         }
@@ -620,9 +729,22 @@ pub(super) fn clear_devices_page(view: HWND) {
     let _ = view;
 }
 
+/// Focuses «Ajustes» of the header (back from the «Ajustes» page).
+pub(super) fn focus_settings_button() {
+    if let Some(Some(b)) = with_app(|a| a.view.settings_button) {
+        unsafe {
+            let _ = SetFocus(Some(b));
+        }
+    }
+}
+
 /// Shows the device grid again and focuses the "Ajustes" button of `focus`.
 pub(super) fn restore_devices_page(view: HWND, focus: Option<&crate::devices::DeviceKey>) {
-    if let Some(Some(b)) = with_app(|a| a.view.refresh) {
+    for b in with_app(|a| [a.view.refresh, a.view.settings_button])
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+    {
         unsafe {
             let _ = ShowWindow(b, SW_SHOWNA);
         }
@@ -732,12 +854,11 @@ fn scroll_by(view: HWND, delta: i32) {
 /// Applies the system theme if it changed (WM_SETTINGCHANGE is broadcast
 /// for many unrelated settings; those cost nothing).
 fn retheme(view: HWND) {
-    let palette = theme::current();
-    if with_app(|a| a.view.palette) == Some(palette) {
+    if with_app(|a| a.view.palette) == Some(theme::current()) {
         return;
     }
-    with_app(|a| a.view.palette = palette);
-    theme::apply_title_bar(view, &palette);
+    let _ = view;
+    // `refresh` applies the new palette and repaints.
     refresh();
 }
 
@@ -767,8 +888,11 @@ fn paint_view(view: HWND) {
         let old = SelectObject(mem, bmp.into());
         panel::fill(mem, rc, palette.bg_app);
         let mouse_page = with_app(|a| a.view.mouse.is_some()) == Some(true);
+        let settings_page = with_app(|a| a.view.settings.is_some()) == Some(true);
         // The mouse page paints itself in its content window.
         if mouse_page {
+        } else if settings_page {
+            app_settings::paint(mem, &palette, g.scale, scroll);
         } else if let Some(f) = fonts {
             SetBkMode(mem, TRANSPARENT);
             let draw = |text: &str, font: HFONT, color: theme::Color, y: i32| {
@@ -830,6 +954,10 @@ extern "system" fn view_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
             let dis = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
             if with_app(|a| a.view.mouse.is_some()) == Some(true) {
                 mouse_settings::draw_item(hwnd, dis);
+            } else if with_app(|a| a.view.settings.is_some()) == Some(true) {
+                app_settings::draw_item(hwnd, dis);
+            } else if dis.CtlID as i32 == ID_APP_SETTINGS {
+                draw_button(hwnd, dis, "Ajustes", None);
             } else {
                 draw_button(hwnd, dis, "Actualizar", None);
             }
@@ -838,7 +966,9 @@ extern "system" fn view_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
         WM_CTLCOLORLISTBOX => mouse_settings::list_color(HDC(wparam.0 as *mut _))
             .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }),
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => {
-            mouse_settings::ctl_color(HDC(wparam.0 as *mut _), HWND(lparam.0 as *mut _))
+            let (hdc, child) = (HDC(wparam.0 as *mut _), HWND(lparam.0 as *mut _));
+            app_settings::ctl_color(hdc, child)
+                .or_else(|| mouse_settings::ctl_color(hdc, child))
                 .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
         }
         WM_COMMAND => {
@@ -851,9 +981,17 @@ extern "system" fn view_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
             {
                 return LRESULT(0);
             }
+            if with_app(|a| a.view.settings.is_some()) == Some(true)
+                && app_settings::on_command(hwnd, id, code)
+            {
+                return LRESULT(0);
+            }
             match (id, code) {
                 (ID_REFRESH, BN_CLICKED) => send(Command::Refresh),
-                (ID_REFRESH, BN_SETFOCUS) => ensure_visible(hwnd, HWND(lparam.0 as *mut _)),
+                (ID_APP_SETTINGS, BN_CLICKED) => app_settings::enter(hwnd),
+                (ID_REFRESH | ID_APP_SETTINGS, BN_SETFOCUS) => {
+                    ensure_visible(hwnd, HWND(lparam.0 as *mut _))
+                }
                 // Enter: owner-drawn buttons are not "push buttons" for the
                 // dialog manager, which sends IDOK instead; click the focused one.
                 (1, _) => unsafe {
@@ -946,10 +1084,12 @@ extern "system" fn view_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
         WM_DESTROY => {
             super::confirm::owner_destroyed();
             mouse_settings::destroyed();
+            app_settings::destroyed();
             with_app(|a| {
                 a.view.hwnd = None;
                 a.view.panels.clear();
                 a.view.refresh = None;
+                a.view.settings_button = None;
             });
             LRESULT(0)
         }
