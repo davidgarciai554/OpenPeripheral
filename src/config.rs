@@ -174,6 +174,9 @@ pub struct General {
     /// blocking writes to the mouse even with the notice off.
     #[serde(default = "on", skip_serializing_if = "is_on")]
     pub conflict_notice: bool,
+    /// «Descargar fotos de los ratones» from img.openmouse.app (`photos`).
+    #[serde(default = "on", skip_serializing_if = "is_on")]
+    pub photos: bool,
 }
 
 impl Default for General {
@@ -184,6 +187,7 @@ impl Default for General {
             theme: ThemeChoice::Sistema,
             notifications: true,
             conflict_notice: true,
+            photos: true,
         }
     }
 }
@@ -556,13 +560,17 @@ mod tests {
         c.general.theme = ThemeChoice::Claro;
         c.general.notifications = false;
         c.general.conflict_notice = false;
+        c.general.photos = false;
         let text = c.to_text();
+        assert!(text.contains("photos = false"), "{text}");
         assert!(text.contains("theme = \"claro\""), "{text}");
         assert_eq!(Config::parse(&text).unwrap(), c);
         // An unknown theme falls back to «Sistema»; the rest still loads.
         let c = Config::parse("[general]\ntheme = \"azul\"\nnotifications = false\n").unwrap();
         assert_eq!(c.general.theme, ThemeChoice::Sistema);
         assert!(!c.general.notifications);
+        // A config from before the photos option has it on.
+        assert!(c.general.photos);
     }
 
     #[test]

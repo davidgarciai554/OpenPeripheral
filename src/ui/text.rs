@@ -2,7 +2,7 @@
 //! State is always spelled out in words, never conveyed by colour alone.
 
 use crate::app::{Shared, Snapshot, Status};
-use crate::devices::{DpiRange, Kind, State};
+use crate::devices::{DpiRange, Kind, State, Support};
 use crate::protocol::{Battery, ChargeState};
 
 pub fn charging(c: ChargeState) -> &'static str {
@@ -40,7 +40,10 @@ pub fn state_lines(s: &State) -> Vec<String> {
         None => "Batería: no disponible".into(),
     }];
     if let Some(d) = &s.dpi {
-        lines.push(format!("DPI: {} ({})", d.current, dpi_range(&d.allowed)));
+        let now = d
+            .current
+            .map_or("desconocido".to_string(), |c| c.to_string());
+        lines.push(format!("DPI: {now} ({})", dpi_range(&d.allowed)));
     }
     if let Some(r) = &s.report_rate {
         lines.push(format!(
@@ -71,12 +74,9 @@ pub fn status_line(snap: &Snapshot) -> String {
 
 /// One line per device for lists and menus.
 pub fn device_line(snap: &Snapshot) -> String {
-    format!(
-        "{} {}: {}",
-        snap.info.vendor,
-        snap.info.name,
-        status_line(snap)
-    )
+    // Listed devices have no vendor of their own (it is in the name).
+    let who = format!("{} {}", snap.info.vendor, snap.info.name);
+    format!("{}: {}", who.trim_start(), status_line(snap))
 }
 
 /// Tray tooltip; Windows truncates it at 127 characters.
@@ -263,10 +263,37 @@ pub fn energy(snap: &Snapshot) -> Energy {
     }
 }
 
+/// Shown in the settings of a mouse found by automatic detection.
+pub const AUTO_NOTICE: &str =
+    "Este ratón se ha detectado automáticamente; algunas funciones pueden no responder.";
+
+/// Shown on the card of a device no driver handles.
+pub const NO_SETTINGS: &str = "OpenPeripheral todavía no puede cambiar sus ajustes.";
+
+/// Added for a mouse (not a keyboard or a gamepad) without settings.
+pub const POINTER_HINT: &str =
+    "Puedes cambiar la velocidad del puntero de Windows en Ajustes › General.";
+
+/// The note of a card without settings.
+pub fn no_settings(kind: crate::devices::Kind) -> String {
+    if kind == crate::devices::Kind::Mouse {
+        format!("{NO_SETTINGS} {POINTER_HINT}")
+    } else {
+        NO_SETTINGS.into()
+    }
+}
+/// Buttons of a mouse whose onboard profile is not in use (host mode).
+pub const HOST_MODE: &str = "La memoria del ratón está desactivada (la suele desactivar G HUB u otro programa de Logitech), así que sus botones guardados no funcionan ahora.";
+
 /// Second line of a card, e.g. "Conectado · Receptor LIGHTSPEED".
 pub fn card_status(snap: &Snapshot) -> String {
     match &snap.status {
         Status::Searching => "Leyendo…".into(),
+        Status::Ok(_) if snap.info.support == Support::Listed => "Detectado · sin ajustes".into(),
+        Status::Ok(_) if snap.info.support == Support::Auto => format!(
+            "Conectado · {} · Detectado automáticamente",
+            snap.info.connection
+        ),
         Status::Ok(_) => format!("Conectado · {}", snap.info.connection),
         Status::Failed(_) => "Sin respuesta · ¿apagado o en reposo?".into(),
         Status::Disconnected => "Desconectado".into(),
@@ -279,8 +306,8 @@ pub fn capabilities(snap: &Snapshot) -> Option<String> {
         return None;
     };
     let mut parts = Vec::new();
-    if let Some(d) = &s.dpi {
-        parts.push(format!("{} DPI", d.current));
+    if let Some(c) = s.dpi.as_ref().and_then(|d| d.current) {
+        parts.push(format!("{c} DPI"));
     }
     if let Some(r) = &s.report_rate {
         parts.push(format!("{} Hz", hz(r.current_ms)));
@@ -356,6 +383,9 @@ pub fn card_summary(snap: &Snapshot) -> String {
     if matches!(snap.status, Status::Disconnected) && snap.saved {
         parts.push("Los ajustes guardados se aplicarán al volver a conectarlo".into());
     }
+    if snap.info.support == Support::Listed {
+        parts.push(no_settings(snap.info.kind).trim_end_matches('.').into());
+    }
     parts.join(". ")
 }
 
@@ -364,7 +394,7 @@ pub fn connected_count(shared: &Shared) -> String {
     let n = shared
         .devices
         .iter()
-        .filter(|d| !matches!(d.status, Status::Disconnected))
+        .filter(|d| !matches!(d.status, Status::Disconnected) && d.info.support != Support::Listed)
         .count();
     match n {
         1 => "1 conectado".into(),
@@ -386,6 +416,7 @@ mod tests {
                 kind: Kind::Mouse,
                 connection: "USB",
                 wired: false,
+                support: crate::devices::Support::Verified,
             },
             status,
             last_battery: None,
@@ -442,7 +473,7 @@ mod tests {
         let s = State {
             battery: None,
             dpi: Some(Dpi {
-                current: 800,
+                current: Some(800),
                 allowed: DpiRange::Range {
                     min: 200,
                     max: 12000,
@@ -508,6 +539,28 @@ mod tests {
             status_line(&snap("x", Status::Failed(Error::Timeout))),
             "sin respuesta (el dispositivo no responde)"
         );
+        let mut auto = snap("G203", Status::Ok(State::default()));
+        auto.info.support = Support::Auto;
+        assert_eq!(
+            card_status(&auto),
+            "Conectado · USB · Detectado automáticamente"
+        );
+        // Saved in the app: unverified, or the onboard profile not in use.
+        assert!(auto.saves_in_app());
+        let mut host = snap("G203", Status::Ok(State::default()));
+        assert!(!host.saves_in_app());
+        host.profile = crate::app::Profile::HostMode;
+        assert!(host.saves_in_app());
+        let mut other = snap("x", Status::Ok(State::default()));
+        other.info = DeviceInfo::listed(0x1532, 0x0528, "Razer Mouse", Kind::Mouse);
+        assert_eq!(card_status(&other), "Detectado · sin ajustes");
+        assert!(card_summary(&other).ends_with("en Ajustes › General"));
+        other.info.kind = Kind::Keyboard;
+        assert!(card_summary(&other).ends_with("todavía no puede cambiar sus ajustes"));
+        other.info.kind = Kind::Mouse;
+        assert_eq!(device_line(&other), "Razer Mouse: conectado");
+        other.status = Status::Disconnected;
+        assert_eq!(card_status(&other), "Desconectado");
         assert_eq!(conflicts(&[]), "");
         assert!(conflicts(&["Logitech G HUB"]).starts_with("En ejecución: Logitech G HUB."));
     }
@@ -592,7 +645,7 @@ mod tests {
         g.info.connection = "Receptor LIGHTSPEED";
         if let Status::Ok(s) = &mut g.status {
             s.dpi = Some(Dpi {
-                current: 1000,
+                current: Some(1000),
                 allowed: DpiRange::Values(vec![1000]),
             });
             s.report_rate = Some(crate::devices::ReportRate {

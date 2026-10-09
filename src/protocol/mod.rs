@@ -1,10 +1,12 @@
 //! Pure protocol codecs. No I/O: every function maps bytes to typed values
 //! and back, so it can be tested without hardware.
 
+pub mod asus;
 pub mod dualsense;
 pub mod hidpp;
 pub mod onboard;
 pub mod razer;
+pub mod steelseries;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChargeState {

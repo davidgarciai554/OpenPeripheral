@@ -98,7 +98,8 @@ impl MouseProfile {
         }
     }
 
-    /// Same values, read from a fresh profile sector.
+    /// Same values, read from a fresh profile sector (light included).
+    #[cfg(test)]
     pub fn from_sector(name: &str, user: &[u8], button_count: u8) -> Option<Self> {
         Some(Self::from_profile(
             name,

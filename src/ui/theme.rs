@@ -3,7 +3,7 @@
 
 use crate::config::ThemeChoice;
 use std::sync::atomic::{AtomicU8, Ordering};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT,
@@ -11,10 +11,12 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    EnumChildWindows, GWL_STYLE, GetWindowLongPtrW, SPI_GETHIGHCONTRAST,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WS_HSCROLL, WS_VSCROLL,
 };
-use windows::core::w;
+use windows::core::{BOOL, PCWSTR, w};
 
 /// sRGB colour as 0xRRGGBB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +267,35 @@ pub fn apply_title_bar(hwnd: HWND, palette: &Palette) {
             (&dark as *const i32).cast(),
             size_of::<i32>() as u32,
         );
+    }
+}
+
+/// Dark scroll bars on `hwnd` and its scrolling children in the dark theme.
+/// `SetWindowTheme` is documented, but the `DarkMode_Explorer` theme name is
+/// not (user's decision, 2026-10-08): if Windows stops providing it, the bars
+/// just stay light. Light and high contrast remove the association.
+pub fn apply_scroll_bars(hwnd: HWND, palette: &Palette) {
+    unsafe extern "system" fn each(child: HWND, dark: LPARAM) -> BOOL {
+        let style = unsafe { GetWindowLongPtrW(child, GWL_STYLE) } as u32;
+        if style & (WS_VSCROLL.0 | WS_HSCROLL.0) != 0 {
+            set(child, dark.0 != 0);
+        }
+        true.into()
+    }
+    fn set(hwnd: HWND, dark: bool) {
+        let name = if dark {
+            w!("DarkMode_Explorer")
+        } else {
+            PCWSTR::null()
+        };
+        unsafe {
+            let _ = SetWindowTheme(hwnd, name, PCWSTR::null());
+        }
+    }
+    let dark = palette.theme == Theme::Dark;
+    set(hwnd, dark);
+    unsafe {
+        let _ = EnumChildWindows(Some(hwnd), Some(each), LPARAM(dark as isize));
     }
 }
 

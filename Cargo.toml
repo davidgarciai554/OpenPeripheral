@@ -36,6 +36,10 @@ windows = { version = "0.62.2", features = [
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_Security",
+    # Mouse photos (plan fotos-de-ratones): download, SHA-256, PNG stream.
+    "Win32_Networking_WinHttp",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
     # SPIKE (plan perfiles-por-juego, paso 0): toasts with buttons.
     "Foundation",
     "Data_Xml_Dom",

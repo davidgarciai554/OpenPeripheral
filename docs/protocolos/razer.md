@@ -38,3 +38,17 @@ La respuesta se acepta solo si coinciden clase e id, el estado es éxito y el CR
 
 - El firmware responde con tid 0x1F en la interfaz 2.
 - Color estático rojo y verde: el usuario lo confirmó visualmente. Razer Synapse estaba instalado, pero no en ejecución.
+
+## Ratones (DPI volátil, 2026-10-09, plan `cualquier-raton`)
+
+- **Hechos de protocolo** (consultados en descripciones públicas; OpenRazer es GPL y no se copia código):
+  - Leer DPI: clase `0x04`, id `0x85`, 7 bytes. La respuesta trae almacenamiento, X (u16 big-endian) e Y.
+  - Fijar DPI: clase `0x04`, id `0x05`, 7 bytes: `[almacenamiento, X alto, X bajo, Y alto, Y bajo, 0, 0]`.
+  - El id de transacción depende de la generación del ratón: `0x1F` en los recientes, `0x3F` en la familia DeathAdder V2 y `0xFF` en los antiguos.
+- **Uso en la app:**
+  - **Detección:** se prueba cada colección de ratón o de teclado de un VID `1532` sin entrada propia, con dos lecturas: firmware y DPI, con cada id de transacción. Si ninguna responde con un DPI válido, no es un ratón; es lo que pasa con teclados y auriculares.
+  - **Escritura:** almacenamiento `0x00` (no se guarda). Si el ratón lo rechaza, falla sin probar el modo persistente.
+  - **Rango:** el protocolo no da el del sensor, así que se ofrece 100–16000 en pasos de 50. Si el ratón informa de un DPI mayor, el rango sube hasta ese valor.
+  - **Comprobación:** tras fijar el DPI se vuelve a leer; si no coincide, se informa de error. Que el modo «no guardar» (`0x00`) funcione en un ratón real no está verificado.
+  - **Nombre:** el que da Windows.
+- **No verificado en hardware:** no había ningún ratón Razer. Lo cubren el simulador (`sim::razer`) y el catálogo.

@@ -19,6 +19,7 @@ pub struct HidppDevice {
     path: CString,
     index: u8,
     features: HashMap<u16, Option<u8>>,
+    onboard: bool,
 }
 
 /// Sends one request and waits for its reply, skipping unrelated traffic
@@ -95,15 +96,17 @@ impl HidppDevice {
             name.extend_from_slice(&chunk);
         }
         name.truncate(len);
-        let name = String::from_utf8_lossy(&name)
-            .trim_end_matches('\0')
-            .trim()
-            .to_string();
+        let name = hidpp::clean_name(&name);
         Ok((!name.is_empty()).then_some(name))
     }
 }
 
-pub fn probe(s: &'static Supported, path: CString, t: &dyn Transport) -> Vec<HidppDevice> {
+pub fn probe(
+    s: &'static Supported,
+    pid: u16,
+    path: CString,
+    t: &dyn Transport,
+) -> Vec<HidppDevice> {
     let mut found = Vec::new();
     for index in INDEXES {
         let ping = 0x5a;
@@ -119,15 +122,38 @@ pub fn probe(s: &'static Supported, path: CString, t: &dyn Transport) -> Vec<Hid
             path: path.clone(),
             index,
             features: HashMap::new(),
+            onboard: s.onboard,
         };
         match dev.read_name(t) {
             Ok(Some(name)) => {
                 dev.info = DeviceInfo::new(s, &name);
             }
+            // An unverified device needs its own name as identity.
+            Ok(None) if s.is_auto() => continue,
             Ok(None) => {}
             // The name is the device identity (saved settings use it); a
             // device that cannot report it now is skipped until next scan.
             Err(_) => continue,
+        }
+        if s.is_auto() {
+            // Only pointing devices: this driver offers mouse settings.
+            let pointer = dev
+                .request(t, Request::DeviceType)
+                .ok()
+                .and_then(|p| hidpp::is_pointer(&p));
+            if pointer != Some(true) {
+                continue;
+            }
+            // Index 0xFF: the device itself (cable, or Bluetooth for the
+            // 0xFF43 entry); 1..6: behind a receiver.
+            let (wired, connection) = match index {
+                0xff if s.wired => (true, "USB"),
+                0xff => (false, s.connection),
+                _ => (false, "Receptor Logitech"),
+            };
+            dev.info.key = super::key(s.vid, pid, &dev.info.name);
+            dev.info.wired = wired;
+            dev.info.connection = connection;
         }
         found.push(dev);
     }
@@ -193,10 +219,21 @@ impl Device for HidppDevice {
     }
 
     fn read_profile(&mut self, t: &dyn Transport) -> Result<ProfileDump> {
+        if !self.onboard {
+            return Err(Error::Unsupported);
+        }
         let p = self.request(t, Request::OnboardInfo)?;
         let info = onboard::parse_info(&p).ok_or(Error::Protocol("información del perfil"))?;
-        if info.profile_format != onboard::KNOWN_FORMAT {
+        if !onboard::KNOWN_FORMATS.contains(&info.profile_format)
+            || info.button_count > onboard::MAX_BUTTONS
+        {
             return Err(Error::Unsupported);
+        }
+        // In host mode the profile is not in use (and the active sector reads
+        // as 0). Changing the mode is left to the program that set it.
+        let mode = self.request(t, Request::GetOnboardMode)?;
+        if mode.first() != Some(&1) {
+            return Err(Error::HostMode);
         }
         let p = self.request(t, Request::GetCurrentProfile)?;
         let sector = u16::from_be_bytes([
@@ -221,7 +258,13 @@ impl Device for HidppDevice {
         let dpi = self
             .optional(t, Request::DpiList { sensor: 0 })?
             .and_then(|p| hidpp::parse_dpi_list(&p));
-        let effects = self.light_effects(t)?;
+        // Profile light verified only in format 3: elsewhere no light is
+        // offered, so its block is never written.
+        let effects = if info.profile_format == onboard::LIGHT_FORMAT {
+            self.light_effects(t)?
+        } else {
+            Vec::new()
+        };
         Ok(ProfileDump {
             info,
             sector,
@@ -233,7 +276,22 @@ impl Device for HidppDevice {
         })
     }
 
+    fn activate_onboard(&mut self, t: &dyn Transport) -> Result<()> {
+        if !self.onboard {
+            return Err(Error::Unsupported);
+        }
+        self.request(t, Request::ActivateOnboard)?;
+        let mode = self.request(t, Request::GetOnboardMode)?;
+        if mode.first() != Some(&1) {
+            return Err(Error::Protocol("el ratón sigue en modo host"));
+        }
+        Ok(())
+    }
+
     fn write_profile(&mut self, t: &dyn Transport, image: &onboard::ProfileImage) -> Result<()> {
+        if !self.onboard {
+            return Err(Error::Unsupported);
+        }
         for req in image.write_requests() {
             self.request(t, req)?;
         }
@@ -262,7 +320,10 @@ impl Device for HidppDevice {
             if let (Some(allowed), Some(current)) =
                 (hidpp::parse_dpi_list(&list), hidpp::parse_dpi(&current))
             {
-                state.dpi = Some(Dpi { current, allowed });
+                state.dpi = Some(Dpi {
+                    current: Some(current),
+                    allowed,
+                });
             }
         }
         if let Some(list) = self.optional(t, Request::ReportRateList)? {
@@ -316,7 +377,7 @@ impl Device for HidppDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::{SUPPORTED, fake::FakeTransport};
+    use crate::devices::{AUTO_LOGITECH, SUPPORTED, Support, fake::FakeTransport};
     use crate::protocol::{Battery, ChargeState};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -334,6 +395,11 @@ mod tests {
 
     /// `commit = false` acknowledges writes without storing them.
     fn g305_with_commit(user: Rc<RefCell<Vec<u8>>>, commit: bool) -> FakeTransport {
+        mouse(user, commit, 3, 1)
+    }
+
+    /// The G305 above reporting another profile `format` and onboard `mode`.
+    fn mouse(user: Rc<RefCell<Vec<u8>>>, commit: bool, format: u8, mode: u8) -> FakeTransport {
         let pending: RefCell<Option<(u16, usize, Vec<u8>)>> = RefCell::new(None);
         FakeTransport::new(move |req| {
             let (idx, feat, func) = (req[1], req[2], req[3]);
@@ -346,9 +412,13 @@ mod tests {
             // 0x8100 memory reads are served from real G305 sectors.
             let memory;
             let p: &[u8] = match (feat, f) {
-                (7, 0) => &[
-                    0x01, 0x03, 0x01, 0x01, 0x01, 0x06, 0x06, 0x00, 0xff, 0x0a, 0x02,
-                ],
+                (7, 0) => {
+                    memory = vec![
+                        0x01, format, 0x01, 0x01, 0x01, 0x06, 0x06, 0x00, 0xff, 0x0a, 0x02,
+                    ];
+                    &memory
+                }
+                (7, 2) => &[mode],
                 (7, 4) => &[0x00, 0x01],
                 (7, 5) => {
                     let sector = match u16::from_be_bytes([req[4], req[5]]) {
@@ -410,6 +480,7 @@ mod tests {
                 (8, 3) => &[],
                 (2, 0) => &[4],
                 (2, 1) => b"G305",
+                (2, 2) => &[3], // deviceType: mouse
                 (4, 0) => &[90, 50, 0],
                 (5, 1) => &[0, 0x00, 0xc8, 0xe0, 0x32, 0x2e, 0xe0, 0, 0],
                 (5, 2) => &[0, 0x06, 0x40, 0x06, 0x40],
@@ -429,9 +500,76 @@ mod tests {
     }
 
     #[test]
+    fn unlisted_logitech_is_detected_with_volatile_settings_only() {
+        let t = g305();
+        let mut d = probe(&AUTO_LOGITECH, 0xc092, CString::new("x").unwrap(), &t).remove(0);
+        assert_eq!(d.info.key.0, "046d:c092/G305");
+        assert_eq!(d.info.support, Support::Auto);
+        assert_eq!(d.info.connection, "Receptor Logitech");
+        assert!(!d.info.wired);
+        let before = t.sent.borrow().len();
+        assert_eq!(d.read_profile(&t), Err(Error::Unsupported));
+        assert_eq!(
+            t.sent.borrow().len(),
+            before,
+            "nothing sent for the profile"
+        );
+        // Volatile settings still work.
+        assert!(d.read_state(&t).unwrap().dpi.is_some());
+    }
+
+    #[test]
+    fn host_mode_profile_is_not_read() {
+        let t = mouse(
+            Rc::new(RefCell::new(onboard::samples::user_profile())),
+            true,
+            3,
+            2,
+        );
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
+        let before = t.sent.borrow().len();
+        assert_eq!(d.read_profile(&t), Err(Error::HostMode));
+        // Only getInfo and getOnboardMode: no memory read, no mode change.
+        let sent = t.sent.borrow();
+        let fns: Vec<u8> = sent[before..]
+            .iter()
+            .filter(|r| r[2] == 7)
+            .map(|r| r[3] >> 4)
+            .collect();
+        assert_eq!(fns, [0, 2]);
+    }
+
+    #[test]
+    fn format_4_profile_is_read_without_its_light() {
+        // The real G203 profile sector, served behind the G305's directory.
+        let t = mouse(
+            Rc::new(RefCell::new(onboard::samples::g203_user())),
+            true,
+            4,
+            1,
+        );
+        let mut d = probe(&SUPPORTED[3], 0xc092, CString::new("x").unwrap(), &t).remove(0);
+        assert_eq!(d.info.key.0, "046d:c092/G305");
+        assert_eq!(d.info.support, Support::Verified);
+        let dump = d.read_profile(&t).unwrap();
+        assert_eq!(dump.info.profile_format, 4);
+        assert!(dump.effects.is_empty(), "light not offered in format 4");
+        assert_eq!(dump.user, onboard::samples::g203_user());
+        // Unknown formats stay unsupported.
+        let t = mouse(
+            Rc::new(RefCell::new(onboard::samples::user_profile())),
+            true,
+            5,
+            1,
+        );
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
+        assert_eq!(d.read_profile(&t), Err(Error::Unsupported));
+    }
+
+    #[test]
     fn reads_the_onboard_profile_read_only() {
         let t = g305();
-        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
         let before = t.sent.borrow().len();
         let dump = d.read_profile(&t).unwrap();
         assert_eq!(dump.sector, 0x0001);
@@ -441,13 +579,13 @@ mod tests {
         assert_eq!(dump.user.len(), 255);
         assert_eq!(dump.effects, onboard::samples::EFFECTS);
         assert_eq!(dump.dpi, Some(onboard::samples::dpi_range()));
-        // Only 0x8100 functions 0, 4 and 5 (reads) were sent: never 6, 7, 8.
+        // Only 0x8100 functions 0, 2, 4 and 5 (reads) were sent: never 6, 7, 8.
         let sent = t.sent.borrow();
         assert!(
             sent[before..]
                 .iter()
                 .filter(|r| r[2] == 7)
-                .all(|r| matches!(r[3] >> 4, 0 | 4 | 5))
+                .all(|r| matches!(r[3] >> 4, 0 | 2 | 4 | 5))
         );
     }
 
@@ -455,7 +593,7 @@ mod tests {
     fn writes_profile_and_verifies_by_reading_back() {
         let user = Rc::new(RefCell::new(onboard::samples::user_profile()));
         let t = g305_with(user.clone());
-        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
         let dump = d.read_profile(&t).unwrap();
         let image = onboard::apply_edits(
             &dump.user,
@@ -487,7 +625,7 @@ mod tests {
             Rc::new(RefCell::new(onboard::samples::user_profile())),
             false,
         );
-        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
         let dump = d.read_profile(&t).unwrap();
         let image = onboard::apply_edits(
             &dump.user,
@@ -509,7 +647,7 @@ mod tests {
     #[test]
     fn probes_and_reads_g305() {
         let t = g305();
-        let mut devs = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t);
+        let mut devs = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t);
         assert_eq!(devs.len(), 1);
         let d = &mut devs[0];
         assert_eq!(d.info().name, "G305");
@@ -522,7 +660,7 @@ mod tests {
                 charging: ChargeState::Discharging
             })
         );
-        assert_eq!(s.dpi.unwrap().current, 1600);
+        assert_eq!(s.dpi.unwrap().current, Some(1600));
         assert_eq!(s.report_rate.unwrap().supported_ms, vec![1, 2, 4, 8]);
         assert!(!s.color);
     }
@@ -531,7 +669,7 @@ mod tests {
     fn live_light_uses_the_effect_position_and_never_the_profile() {
         use crate::protocol::onboard::Light;
         let t = g305();
-        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
         let before = t.sent.borrow().len();
         let light = Light::Breathing {
             color: crate::protocol::razer::Rgb {
@@ -566,7 +704,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_before_writing() {
         let t = g305();
-        let mut d = probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).remove(0);
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
         let before = t.sent.borrow().len();
         assert_eq!(d.apply(&t, Change::Dpi(1625)), Err(Error::Unsupported));
         // Only list queries were sent, never a set request (function 3 / 2).
@@ -590,6 +728,6 @@ mod tests {
     #[test]
     fn silent_receiver_yields_nothing() {
         let t = FakeTransport::new(|_| vec![]);
-        assert!(probe(&SUPPORTED[0], CString::new("x").unwrap(), &t).is_empty());
+        assert!(probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).is_empty());
     }
 }

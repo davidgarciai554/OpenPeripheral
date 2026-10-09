@@ -152,6 +152,16 @@ pub fn load_original(key: &DeviceKey) -> Result<Option<Backup>, String> {
     }
 }
 
+/// What a copy keeps of a profile read: the sectors, never the limits
+/// (DPI range, light effects), which are always read from the device.
+fn stored(dump: &ProfileDump) -> ProfileDump {
+    ProfileDump {
+        dpi: None,
+        effects: Vec::new(),
+        ..dump.clone()
+    }
+}
+
 /// Stores the original copy once. If it already exists it is returned
 /// unchanged: the first copy is never overwritten.
 pub fn save_original(key: &DeviceKey, dump: &ProfileDump, today: &str) -> Result<Backup, String> {
@@ -162,7 +172,7 @@ pub fn save_original(key: &DeviceKey, dump: &ProfileDump, today: &str) -> Result
     let backup = Backup {
         device: key.0.clone(),
         created: today.into(),
-        dump: dump.clone(),
+        dump: stored(dump),
     };
     let text = to_text(&backup);
     // Parse what will be written before writing it.
@@ -231,6 +241,23 @@ mod tests {
             created: "2026-10-06".into(),
             dump: dump(),
         }
+    }
+
+    #[test]
+    fn a_read_with_limits_survives_the_round_trip() {
+        // A real read carries the device limits, which are not stored.
+        let read = ProfileDump {
+            dpi: Some(samples::dpi_range()),
+            effects: samples::EFFECTS.to_vec(),
+            ..dump()
+        };
+        let b = Backup {
+            dump: stored(&read),
+            ..backup()
+        };
+        assert_eq!(from_text(&to_text(&b)), Ok(b.clone()));
+        assert_eq!(b.dump.user, read.user);
+        assert_eq!(b.dump.rom, read.rom);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use super::text::{self, Energy};
 use super::theme::{Color, Palette};
 use crate::app::{Shared, Snapshot, Status};
 use crate::config::to_hex;
-use crate::devices::{DeviceKey, Kind};
+use crate::devices::{DeviceKey, Kind, Support};
 use crate::protocol::ChargeState;
 use windows::Win32::Foundation::{COLORREF, RECT};
 use windows::Win32::Graphics::Gdi::*;
@@ -740,6 +740,36 @@ fn device(ctx: &Ctx, snap: &Snapshot, width: i32, height: i32) -> Layout {
         y += h + gap;
     }
 
+    // Devices no driver handles: a note instead of a button.
+    if snap.info.support == Support::Listed {
+        let (item, _, h) = text_item(
+            ctx,
+            pad,
+            y,
+            inner,
+            text::no_settings(snap.info.kind),
+            FontRole::Body,
+            secondary,
+            0,
+        );
+        items.push(item);
+        y += h + pad;
+        return Layout {
+            height: if ctx.compact {
+                y
+            } else {
+                y.max(ctx.px(280.0)).max(height)
+            },
+            button: None,
+            items,
+            surface: if disconnected {
+                Surface::Disconnected
+            } else {
+                Surface::Card
+            },
+        };
+    }
+
     // "Ajustes" button, bottom right.
     let by = if ctx.compact {
         // Shares the last row only when that row fits beside the button.
@@ -1160,7 +1190,9 @@ pub fn button_enabled(kind: &PanelKind, shared: &Shared) -> bool {
             .devices
             .iter()
             .find(|d| &d.info.key == key)
-            .is_some_and(|d| !matches!(d.status, Status::Disconnected)),
+            .is_some_and(|d| {
+                !matches!(d.status, Status::Disconnected) && d.info.support != Support::Listed
+            }),
         _ => true,
     }
 }

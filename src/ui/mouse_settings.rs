@@ -15,6 +15,7 @@ use super::{send, wide, with_app};
 use crate::app::{Command, Confirmed, Profile, ProfileView, Shared, Snapshot, Source, Status};
 use crate::devices::{Change, DeviceKey, DpiRange};
 use crate::protocol::onboard::{Action, Light, ProfileEdits};
+use std::rc::Rc;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::SystemServices::{SS_LEFT, SS_NOPREFIX};
@@ -55,29 +56,30 @@ const ID_DPI_NOW: i32 = 326;
 // buttons of a narrow window, and the hint under the drawing.
 const ID_BTN_STATUS: i32 = 362;
 const ID_BTN_HINT: i32 = 363;
-/// Buttons shown: the G305 declares 6; the generic drawing has 8 points.
-const MAX_BUTTONS: i32 = 8;
-const ID_DOT0: i32 = 1100; // ..=1107
-const ID_LBL_NAME0: i32 = 1110; // ..=1117
-const ID_LBL_ACT0: i32 = 1120; // ..=1127
-const ID_ROW0: i32 = 1130; // ..=1137
+const ID_BTN_ACTIVATE: i32 = 364;
+/// Buttons shown: as many as an onboard profile can hold (16). Those
+/// without a point on the drawing go to the list under it.
+const MAX_BUTTONS: i32 = crate::protocol::onboard::MAX_BUTTONS as i32;
+const ID_DOT0: i32 = 1100; // ..=1115
+const ID_LBL_NAME0: i32 = 1120; // ..=1135
+const ID_LBL_ACT0: i32 = 1140; // ..=1155
+const ID_ROW0: i32 = 1160; // ..=1175
 // «Asignaciones»: what the chosen button does, in three tabs.
-const ID_AS_TITLE: i32 = 1140;
-const ID_AS_FOR: i32 = 1141;
-const ID_AS_TAB0: i32 = 1142; // ..=1144
-const ID_AS_LOCK: i32 = 1145;
-const ID_AS_SEARCH_LABEL: i32 = 1146;
-const ID_AS_SEARCH: i32 = 1147;
-const ID_AS_COUNT: i32 = 1148;
-const ID_AS_LIST: i32 = 1149;
-const ID_AS_NOTE: i32 = 1150;
-const ID_AS_KEY_LABEL: i32 = 1151;
-const ID_AS_KEY: i32 = 1152;
-const ID_AS_KEY_HELP: i32 = 1153;
-const ID_AS_KEY_ASSIGN: i32 = 1154;
-const ID_AS_KEY_CLEAR: i32 = 1155;
-const ID_AS_MOUSE0: i32 = 1160; // ..=1164
-const ID_BTN_LAST: i32 = 1164;
+const ID_AS_TITLE: i32 = 1180;
+const ID_AS_FOR: i32 = 1181;
+const ID_AS_TAB0: i32 = 1182; // ..=1184
+const ID_AS_LOCK: i32 = 1185;
+const ID_AS_SEARCH_LABEL: i32 = 1186;
+const ID_AS_SEARCH: i32 = 1187;
+const ID_AS_COUNT: i32 = 1188;
+const ID_AS_LIST: i32 = 1189;
+const ID_AS_KEY_LABEL: i32 = 1191;
+const ID_AS_KEY: i32 = 1192;
+const ID_AS_KEY_HELP: i32 = 1193;
+const ID_AS_KEY_ASSIGN: i32 = 1194;
+const ID_AS_KEY_CLEAR: i32 = 1195;
+const ID_AS_MOUSE0: i32 = 1196; // ..=1200
+const ID_BTN_LAST: i32 = 1200;
 
 /// Tabs of «Asignaciones».
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -177,7 +179,7 @@ const TABS: [(Tab, &str); 3] = [
 /// The tab a control belongs to; `None`: it shows in every tab.
 fn tab_of(id: i32) -> Option<Tab> {
     match id {
-        ID_DPI_TITLE..=ID_DPI_NOW | ID_BTN_STATUS..=ID_BTN_HINT | ID_DOT0..=ID_BTN_LAST => {
+        ID_DPI_TITLE..=ID_DPI_NOW | ID_BTN_STATUS..=ID_BTN_ACTIVATE | ID_DOT0..=ID_BTN_LAST => {
             Some(Tab::Buttons)
         }
         ID_LIGHT_TITLE..=ID_LIGHT_STATUS => Some(Tab::Light),
@@ -258,6 +260,8 @@ enum Pending {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Write {
     Save,
+    /// «Activar la memoria del ratón» (host mode).
+    Activate,
     Original,
     Factory,
     /// "Usar" a profile.
@@ -308,6 +312,13 @@ pub(crate) struct MouseState {
     list_query: Option<String>,
     leaders: Vec<(i32, i32, i32, i32)>,
     art: Option<(i32, i32, f32, &'static super::mouse_art::Art)>,
+    /// The cached photo of this mouse (plan `fotos-de-ratones`): which file
+    /// and cache change it was read for, its bytes, and the copy scaled to
+    /// the drawing's box (painted instead of the drawing, also behind each
+    /// point). Released before GDI+ shuts down (WM_DESTROY comes first).
+    photo_key: Option<(&'static str, u64)>,
+    photo: Option<(&'static super::mouse_art::PhotoArt, Rc<[u8]>)>,
+    picture: Option<Rc<glyph::Picture>>,
     /// Light picked in the section; `None` until the profile is read.
     pick: Option<Pick>,
     /// Outcome of the last light "Probar".
@@ -380,7 +391,7 @@ fn snap_base_dpi(snap: &Snapshot) -> Option<u16> {
         snap.saved_dpi,
         profile_view(snap).and_then(|v| v.dpi_cycle),
         snap.original_dpi,
-        current_dpi(snap).map(|(c, _)| c),
+        current_dpi(snap).and_then(|(c, _)| c),
     )
 }
 
@@ -485,16 +496,18 @@ pub fn bounds(range: &DpiRange) -> (u16, u16) {
 }
 
 /// "Admite de 200 a 12000, en pasos de 50." / "Admite 400, 800 o 1600."
-pub fn range_sentence(range: &DpiRange) -> String {
-    match range {
-        DpiRange::Range { min, max, step } => format!(
-            "DPI con el que arranca el ratón. Admite de {min} a {max}, en pasos de {step}. Al guardarlo se escribe en los 4 niveles del botón DPI."
-        ),
-        DpiRange::Values(_) => format!(
-            "DPI con el que arranca el ratón. Admite {}. Al guardarlo se escribe en los 4 niveles del botón DPI.",
-            text::dpi_range(range)
-        ),
-    }
+/// `auto`: a mouse found by automatic detection, saved in the app only.
+pub fn range_sentence(range: &DpiRange, auto: bool) -> String {
+    let admits = match range {
+        DpiRange::Range { min, max, step } => format!("de {min} a {max}, en pasos de {step}"),
+        DpiRange::Values(_) => text::dpi_range(range),
+    };
+    let save = if auto {
+        "Al guardarlo, OpenPeripheral lo aplica cada vez que conectas el ratón."
+    } else {
+        "Al guardarlo se escribe en los 4 niveles del botón DPI."
+    };
+    format!("DPI con el que arranca el ratón. Admite {admits}. {save}")
 }
 
 /// Error text for an invalid field, with the nearest valid values.
@@ -910,13 +923,6 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
             | (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
     );
     add(
-        ID_AS_NOTE,
-        Kind::Text(Tertiary, Card),
-        s,
-        "Los atajos con la tecla Windows están en el grupo «Windows»; en «Teclas» no se pueden escribir.",
-        st,
-    );
-    add(
         ID_AS_KEY_LABEL,
         Kind::Text(Notice, Card),
         s,
@@ -966,6 +972,13 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         s,
         "",
         st | WS_GROUP.0,
+    );
+    add(
+        ID_BTN_ACTIVATE,
+        Kind::Button(ButtonStyle::Primary, App),
+        b,
+        "Activar la memoria del ratón",
+        btn,
     );
     for i in 0..MAX_BUTTONS {
         add(
@@ -1210,7 +1223,7 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         .map(|c| c.id)
         .filter(|&id| {
             (ID_DOT0..=ID_BTN_LAST).contains(&id)
-                || [ID_BAR_DISCARD, ID_BAR_SAVE].contains(&id)
+                || [ID_BAR_DISCARD, ID_BAR_SAVE, ID_BTN_ACTIVATE].contains(&id)
                 || (ID_PILL0..ID_PILL0 + MAX_ROWS).contains(&id)
                 || (ID_GAM_DEL0..ID_GAM_DEL0 + MAX_PROGS).contains(&id)
                 || [
@@ -1255,6 +1268,9 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         list_query: None,
         leaders: Vec::new(),
         art: None,
+        photo_key: None,
+        photo: None,
+        picture: None,
         pick: None,
         light_result: None,
         tried_dpi: None,
@@ -1286,6 +1302,9 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
     });
     apply_tab_mask();
     fill_field_from_device(view);
+    if let Some(p) = with_app(|a| a.view.palette) {
+        super::theme::apply_scroll_bars(view, &p);
+    }
     refresh(view);
     if let Some(b) = ctl(ID_BACK) {
         unsafe {
@@ -1435,7 +1454,9 @@ fn snapshot<'a>(shared: &'a Shared, key: &DeviceKey) -> Option<&'a Snapshot> {
     shared.devices.iter().find(|d| &d.info.key == key)
 }
 
-fn current_dpi(snap: &Snapshot) -> Option<(u16, DpiRange)> {
+/// DPI the sensor uses now (`None`: the mouse cannot report it) and the
+/// values it accepts.
+fn current_dpi(snap: &Snapshot) -> Option<(Option<u16>, DpiRange)> {
     match &snap.status {
         Status::Ok(s) => s.dpi.as_ref().map(|d| (d.current, d.allowed.clone())),
         _ => None,
@@ -1639,12 +1660,21 @@ pub(crate) fn refresh(view: HWND) {
             "Conecta o enciende el ratón para cambiar sus ajustes. Los controles se activarán solos cuando vuelva; los cambios sin guardar se conservan."
         },
     );
-    let notice = if shared.general.conflict_notice {
-        text::conflicts(&shared.conflicts)
-    } else {
-        String::new()
-    };
-    set(ID_NOTICE, &notice);
+    let mut notice = Vec::new();
+    if snap.is_some_and(|s| s.info.support == crate::devices::Support::Auto) {
+        notice.push(text::AUTO_NOTICE.to_string());
+    }
+    if shared.general.conflict_notice {
+        notice.push(text::conflicts(&shared.conflicts));
+    }
+    notice.retain(|n| !n.is_empty());
+    set(
+        ID_NOTICE,
+        &notice.join(
+            "
+",
+        ),
+    );
     devices_view::set_text_if_changed(view, &format!("OpenPeripheral — Ajustes de {name}"));
 
     let busy = pending.is_some();
@@ -1669,15 +1699,19 @@ pub(crate) fn refresh(view: HWND) {
         },
     );
     if let Some(d) = &dpi {
-        set(ID_DPI_DESC, &range_sentence(&d.allowed));
+        let auto = snap.is_some_and(Snapshot::saves_in_app);
+        set(ID_DPI_DESC, &range_sentence(&d.allowed, auto));
         set(
             ID_DPI_CURRENT,
             &saved_dpi_text(snap.and_then(|s| s.saved_dpi), cycle, base),
         );
         // What the sensor uses now: a DPI being tried shows here first.
-        set(ID_DPI_NOW, &format!("{} DPI", d.current));
+        set(
+            ID_DPI_NOW,
+            &d.current.map_or("—".to_string(), |c| format!("{c} DPI")),
+        );
         let (lo, hi) = bounds(&d.allowed);
-        let from = field.unwrap_or(d.current);
+        let from = field.or(d.current).unwrap_or(lo);
         let presets = presets_for(&d.allowed);
         for i in 0..PRESETS.len() {
             let id = ID_PRESET0 + i as i32;
@@ -1736,10 +1770,12 @@ pub(crate) fn refresh(view: HWND) {
         } else if let Some((ok, v)) = applied.filter(|&(_, v)| field == Some(v)) {
             if !ok {
                 (
-                    format!(
-                        "Error: el ratón no respondió; sigue en {} DPI. Muévelo para despertarlo y vuelve a intentarlo.",
-                        d.current
-                    ),
+                    match d.current {
+                        Some(c) => format!(
+                            "Error: el ratón no respondió; sigue en {c} DPI. Muévelo para despertarlo y vuelve a intentarlo."
+                        ),
+                        None => "Error: el ratón no respondió. Muévelo para despertarlo y vuelve a intentarlo.".to_string(),
+                    },
                     Some(false),
                 )
             } else if edits.dpi == Some(v) {
@@ -1785,7 +1821,9 @@ pub(crate) fn refresh(view: HWND) {
     let requested = with_app(|a| a.view.mouse.as_ref().map(|m| m.profile_requested))
         .flatten()
         .unwrap_or(true);
-    if connected && profile == Profile::NotRead && !requested {
+    // The profile is read again each time the page opens: another program
+    // (G HUB) may have changed the mouse or its onboard mode since.
+    if connected && !requested {
         with_app(|a| {
             if let Some(m) = a.view.mouse.as_mut() {
                 m.profile_requested = true;
@@ -1801,12 +1839,15 @@ pub(crate) fn refresh(view: HWND) {
             "Este ratón todavía no permite cambiar sus botones desde OpenPeripheral.".into(),
             Vec::new(),
         ),
+        Profile::HostMode => (text::HOST_MODE.into(), Vec::new()),
         Profile::Failed(e) => (
             format!("Error: no se pudo leer el perfil del ratón ({e})."),
             Vec::new(),
         ),
     };
     set(ID_BTN_STATUS, &status);
+    show(ID_BTN_ACTIVATE, connected && profile == Profile::HostMode);
+    enable(ID_BTN_ACTIVATE, pending.is_none());
     let backup_date = match snap.and_then(|s| s.backup.clone()) {
         Some(Ok(date)) => Some(date),
         _ => None,
@@ -1831,7 +1872,7 @@ pub(crate) fn refresh(view: HWND) {
     })
     .flatten()
     .unwrap_or(0);
-    show_button_views(view, rows.len());
+    show_button_views(view, rows.len(), drawn_points(view));
     for (i, r) in rows.iter().enumerate().take(MAX_BUTTONS as usize) {
         let id = |first: i32| first + i as i32;
         let note = if r.locked {
@@ -1920,13 +1961,7 @@ pub(crate) fn refresh(view: HWND) {
         enable(id, can);
     }
     let on = |t: AsTab| usable && as_tab == t;
-    for id in [
-        ID_AS_SEARCH_LABEL,
-        ID_AS_SEARCH,
-        ID_AS_COUNT,
-        ID_AS_LIST,
-        ID_AS_NOTE,
-    ] {
+    for id in [ID_AS_SEARCH_LABEL, ID_AS_SEARCH, ID_AS_COUNT, ID_AS_LIST] {
         show(id, on(AsTab::Commands));
         enable(id, can);
     }
@@ -2017,7 +2052,10 @@ pub(crate) fn refresh(view: HWND) {
         ID_BAR_SAVE,
         connected && !busy && !ghub && editable && !hex_bad,
     );
-    let (save_text, save_icon) = if writing {
+    let activating = matches!(pending, Some((_, Pending::Buttons(Write::Activate))));
+    let (save_text, save_icon) = if activating {
+        ("Activando la memoria del ratón…".to_string(), None)
+    } else if writing {
         (
             "Guardando en el ratón… No apagues ni desconectes el ratón hasta que termine."
                 .to_string(),
@@ -2073,6 +2111,9 @@ pub(crate) fn refresh(view: HWND) {
     }
     keep_focus_visible();
 
+    if let Some(s) = snap {
+        refresh_photo(&shared, &s.info.name);
+    }
     devices_view::relayout(view);
     unsafe {
         let _ = RedrawWindow(
@@ -2637,7 +2678,12 @@ fn finish_write(what: Write, message: Option<&crate::app::Message>) {
                 m.then_use = None;
             }
             let text = match (what, ok) {
+                (Write::Save, true) if cause.contains("guardado en OpenPeripheral") => {
+                    "Guardado en OpenPeripheral: se aplicará cada vez que conectes el ratón.".to_string()
+                }
                 (Write::Save, true) => "Guardado en el ratón. Se comprobó la escritura leyendo de nuevo el perfil.".to_string(),
+                (Write::Activate, true) => "Memoria del ratón activada: ya puedes ver y cambiar sus botones.".to_string(),
+                (Write::Activate, false) => format!("Error: no se pudo activar la memoria del ratón. {cause}"),
                 (Write::Original, true) => "Perfil original restaurado en el ratón. Se comprobó leyendo de nuevo el perfil.".to_string(),
                 (Write::Factory, true) => "Valores de fábrica restaurados en el ratón. Se comprobó leyendo de nuevo el perfil.".to_string(),
                 (Write::Use, true) => String::new(),
@@ -3079,6 +3125,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     let mut boxes = Vec::new();
     let mut leaders = Vec::new();
     let mut art_at = None;
+    let mut picture = None;
 
     // «Botones y DPI» (DESIGN.md, revisión 2026-10-08): «Asignaciones», the
     // drawing and the DPI side by side from 1290 px, the DPI under the
@@ -3098,6 +3145,12 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             (pl + aw + gap, pw - aw - gap)
         };
         let top = y;
+        // Lowest content y that still fits above the bar: below the cards
+        // come 20 px of gap and 20 px of page padding.
+        let bar_h = with_app(|a| a.view.mouse.as_ref().map(|m| m.bar_h))
+            .flatten()
+            .unwrap_or(0);
+        let fit_bottom = rc.bottom - bar_h - px(40.0);
         let (art, button_rows) = with_app(|a| {
             let m = a.view.mouse.as_ref()?;
             let art = a
@@ -3111,15 +3164,21 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         })
         .flatten()
         .unwrap_or_default();
-        let art = art.unwrap_or(&super::mouse_art::GENERIC);
-        // The window may have crossed 760 px: labels or list.
-        show_button_views(view, button_rows.len());
-        // A button without a point in the drawing is only in the list of a
-        // narrow window (today every drawing has a point per button).
+        let vector = art.unwrap_or(&super::mouse_art::GENERIC);
+        // The photo replaces the drawing in the same box (not in the narrow
+        // list); if GDI+ cannot scale it, the drawing stays.
+        let photo = with_app(|a| a.view.mouse.as_ref().and_then(|m| m.photo.clone()))
+            .flatten()
+            .filter(|_| !stacked);
+        let mut art = photo.as_ref().map_or(vector, |(pa, _)| &pa.art);
+        // Buttons with a point on the drawing; the rest go to the list
+        // under it (a narrow window lists them all).
         let n = button_rows
             .len()
             .min(art.points.len())
             .min(MAX_BUTTONS as usize);
+        // The window may have crossed 760 px: labels or list.
+        show_button_views(view, button_rows.len(), n);
 
         // The drawing, its points and their labels; the list when narrow.
         let mut cy = top;
@@ -3130,22 +3189,52 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         } else {
             put(ID_BTN_STATUS, 0, 0, 0, 0);
         }
+        if visible(ID_BTN_ACTIVATE) {
+            // Drawn in semibold (primary style): wider than measured.
+            let w = btn_w(&txt(ID_BTN_ACTIVATE)) + px(16.0);
+            put(
+                ID_BTN_ACTIVATE,
+                cx - ring,
+                cy - ring,
+                w + 2 * ring,
+                bh + 2 * ring,
+            );
+            cy += bh + px(12.0);
+        }
         let name_h = ctx.measure("Ag", FontRole::Body, 1000, 1).1;
         let act_h = ctx.measure("Ag", FontRole::Strong, 1000, 1).1;
         if n > 0 {
             let side_w = if stacked { 0 } else { px(180.0) };
-            let max_h = if stacked { px(300.0) } else { px(470.0) };
-            let max_w = (cw - 2 * side_w - px(40.0)).max(px(120.0));
-            let k = (max_h as f32 / art.size.1).min(max_w as f32 / art.size.0);
-            let (art_w, art_h) = ((art.size.0 * k) as i32, (art.size.1 * k) as i32);
             let has_top = !stacked && art.points[..n].iter().any(|p| p.side == Side::Top);
-            let ax0 = cx + (cw - art_w) / 2;
             let ay0 = cy
                 + if has_top {
                     name_h + act_h + px(18.0)
                 } else {
                     px(8.0)
                 };
+            // With three columns the page fits the window: the drawing and
+            // the hint under it shrink (down to 300 px) instead of scrolling.
+            let max_h = if stacked {
+                px(300.0)
+            } else if three {
+                let (_, hh) = measure(ID_BTN_HINT, Role::Secondary, cw);
+                (fit_bottom - ay0 - px(32.0) - hh).clamp(px(300.0), px(470.0))
+            } else {
+                px(470.0)
+            };
+            let max_w = (cw - 2 * side_w - px(40.0)).max(px(120.0));
+            let k = (max_h as f32 / art.size.1).min(max_w as f32 / art.size.0);
+            let (art_w, art_h) = ((art.size.0 * k) as i32, (art.size.1 * k) as i32);
+            if let Some((pa, bytes)) = &photo {
+                picture = with_app(|a| a.view.mouse.as_ref().and_then(|m| m.picture.clone()))
+                    .flatten()
+                    .filter(|p| (p.w, p.h) == (art_w, art_h))
+                    .or_else(|| glyph::Picture::scaled(bytes, pa.crop, art_w, art_h).map(Rc::new));
+                if picture.is_none() && vector.size == art.size {
+                    art = vector;
+                }
+            }
+            let ax0 = cx + (cw - art_w) / 2;
             art_at = Some((ax0, ay0, k, art));
             let dot = px(28.0);
             // Bottom of the last label on the left and on the right: a label
@@ -3207,7 +3296,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             cy = ay0 + art_h + px(16.0);
             for (i, r) in button_rows.iter().enumerate().take(MAX_BUTTONS as usize) {
                 let id = ID_ROW0 + i as i32;
-                if !stacked {
+                if !stacked && i < n {
                     put(id, 0, 0, 0, 0);
                     continue;
                 }
@@ -3235,13 +3324,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             (pl, top, aw)
         };
         let mut as_bottom = asy;
-        let commands = [
-            ID_AS_SEARCH_LABEL,
-            ID_AS_SEARCH,
-            ID_AS_COUNT,
-            ID_AS_LIST,
-            ID_AS_NOTE,
-        ];
+        let commands = [ID_AS_SEARCH_LABEL, ID_AS_SEARCH, ID_AS_COUNT, ID_AS_LIST];
         let keys = [
             ID_AS_KEY_LABEL,
             ID_AS_KEY,
@@ -3284,13 +3367,10 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
                 put(ID_AS_LOCK, 0, 0, 0, 0);
             }
             // As tall as the window allows; the list scrolls inside.
-            let bar_h = with_app(|a| a.view.mouse.as_ref().map(|m| m.bar_h))
-                .flatten()
-                .unwrap_or(0);
             let card_h = if stacked {
                 0
             } else {
-                (rc.bottom - bar_h - top - px(24.0)).clamp(px(480.0), px(780.0))
+                (fit_bottom - top).clamp(px(480.0), px(780.0))
             };
             let field_box = |ay: i32, boxes: &mut Vec<RECT>| {
                 let f = RECT {
@@ -3313,11 +3393,10 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
                 let (_, ch) = measure(ID_AS_COUNT, Role::Tertiary, iw);
                 put(ID_AS_COUNT, ax2, ay, iw, ch);
                 ay += ch + px(6.0);
-                let (_, nh) = measure(ID_AS_NOTE, Role::Tertiary, iw);
                 let list_h = if stacked {
                     px(320.0)
                 } else {
-                    (asy + card_h - ip - nh - px(10.0) - ay).max(px(200.0))
+                    (asy + card_h - ip - ay).max(px(200.0))
                 };
                 put(ID_AS_LIST, ax2, ay, iw, list_h);
                 unsafe {
@@ -3328,9 +3407,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
                         Some(LPARAM(px(34.0) as isize)),
                     );
                 }
-                ay += list_h + px(10.0);
-                put(ID_AS_NOTE, ax2, ay, iw, nh);
-                ay += nh;
+                ay += list_h;
             } else {
                 for id in commands {
                     put(id, 0, 0, 0, 0);
@@ -3988,6 +4065,7 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
             m.boxes = boxes;
             m.leaders = leaders;
             m.art = art_at;
+            m.picture = picture;
             m.save_icon = match (m.save_icon, save_xy) {
                 (Some((_, _, ok)), Some((x, y))) => Some((x, y, ok)),
                 _ => None,
@@ -4104,10 +4182,14 @@ pub(crate) fn paint(mem: HDC, palette: &Palette, scale: f32, scroll: i32) {
         c.fill_round_rect(0.0, 0.0, u(x2 - x1), 1.0, 0.0, palette.border_card);
     }
     let (badges, boxes, leaders, art) = with_app(|a| {
-        a.view
-            .mouse
-            .as_ref()
-            .map(|m| (m.badges.clone(), m.boxes.clone(), m.leaders.clone(), m.art))
+        a.view.mouse.as_ref().map(|m| {
+            (
+                m.badges.clone(),
+                m.boxes.clone(),
+                m.leaders.clone(),
+                m.art.map(|a| (a, m.picture.clone())),
+            )
+        })
     })
     .flatten()
     .unwrap_or_default();
@@ -4124,14 +4206,13 @@ pub(crate) fn paint(mem: HDC, palette: &Palette, scale: f32, scroll: i32) {
     }
     // The drawing of the mouse, then the leader lines of its points (1 px
     // `border.control`; decorative, the points carry the names).
-    if let Some((x, y, k, art)) = art {
-        glyph::mouse(
+    if let Some(((x, y, k, art), pic)) = art {
+        backdrop(
             &mut c,
-            x as f32,
-            (y - scroll) as f32,
-            k,
-            scale,
+            (x as f32, (y - scroll) as f32, k),
             art,
+            pic.as_deref(),
+            scale,
             palette,
         );
     }
@@ -4267,7 +4348,13 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
             let (x, y, k, art) = m.art?;
             let mut at = [windows::Win32::Foundation::POINT::default()];
             unsafe { MapWindowPoints(Some(dis.hwndItem), Some(m.content), &mut at) };
-            Some((x - at[0].x, y - a.view.scroll - at[0].y, k, art))
+            Some((
+                x - at[0].x,
+                y - a.view.scroll - at[0].y,
+                k,
+                art,
+                m.picture.clone(),
+            ))
         })
         .flatten();
         draw_dot(dis, chosen, row.locked, behind, &palette, scale);
@@ -4613,15 +4700,57 @@ fn is_stacked(view: HWND) -> bool {
 }
 
 /// The labels of the points in a wide window, the list in a narrow one.
-fn show_button_views(view: HWND, n: usize) {
+/// How button `i` of `n` shows: a point on the drawing (the first
+/// `drawn`), its label beside it (wide window), and a row in the list
+/// (narrow window, or no point).
+#[derive(Debug, PartialEq, Eq)]
+struct ButtonView {
+    point: bool,
+    label: bool,
+    row: bool,
+}
+
+fn button_view(i: usize, n: usize, drawn: usize, stacked: bool) -> ButtonView {
+    let has = i < n && i < MAX_BUTTONS as usize;
+    let point = has && i < drawn;
+    ButtonView {
+        point,
+        label: point && !stacked,
+        row: has && (stacked || !point),
+    }
+}
+
+/// Points of the drawing (or photo) of the open mouse, as `layout` picks it.
+fn drawn_points(view: HWND) -> usize {
+    let stacked = is_stacked(view);
+    with_app(|a| {
+        let m = a.view.mouse.as_ref()?;
+        let photo = m.photo.as_ref().filter(|_| !stacked);
+        let vector = a
+            .view
+            .shared
+            .devices
+            .iter()
+            .find(|d| d.info.key == m.key)
+            .map(|d| super::mouse_art::art_for(&d.info.name))
+            .unwrap_or(&super::mouse_art::GENERIC);
+        Some(photo.map_or(vector, |(pa, _)| &pa.art).points.len())
+    })
+    .flatten()
+    .unwrap_or(0)
+}
+
+/// `n` buttons, the first `drawn` with a point on the drawing.
+fn show_button_views(view: HWND, n: usize, drawn: usize) {
     let stacked = is_stacked(view);
     for i in 0..MAX_BUTTONS {
-        let has = (i as usize) < n;
-        show(ID_DOT0 + i, has);
-        show(ID_ROW0 + i, has && stacked);
-        show(ID_LBL_NAME0 + i, has && !stacked);
-        show(ID_LBL_ACT0 + i, has && !stacked);
-        // One way with Tab: the list when narrow, else the points.
+        let v = button_view(i as usize, n, drawn, stacked);
+        show(ID_DOT0 + i, v.point);
+        show(ID_ROW0 + i, v.row);
+        show(ID_LBL_NAME0 + i, v.label);
+        show(ID_LBL_ACT0 + i, v.label);
+        // One way with Tab: the list when narrow, else the points (and
+        // the rows of the buttons without one).
         set_tabstop(ID_DOT0 + i, !stacked);
     }
     show(ID_BTN_HINT, n > 0);
@@ -4759,13 +4888,65 @@ fn selected_command() -> Option<Action> {
     Some(super::commands::COMMANDS[row].action())
 }
 
+/// The mouse behind the points at (x px, y px, px per unit): its photo when
+/// there is one, the line drawing otherwise.
+fn backdrop(
+    c: &mut Canvas,
+    (x, y, k): (f32, f32, f32),
+    art: &super::mouse_art::Art,
+    picture: Option<&glyph::Picture>,
+    scale: f32,
+    palette: &Palette,
+) {
+    match picture {
+        Some(p) => glyph::picture(c, x, y, p),
+        None => glyph::mouse(c, x, y, k, scale, art, palette),
+    }
+}
+
+/// Reads this mouse's cached photo (`photos`) when «Descargar fotos de los
+/// ratones» is on, the theme is not high contrast and its points were
+/// measured; again only when the cache changes. Without it: the drawing.
+fn refresh_photo(shared: &crate::app::Shared, name: &str) {
+    let high_contrast =
+        with_app(|a| a.view.palette.theme == super::theme::Theme::HighContrast).unwrap_or(true);
+    let wanted = crate::photos::photo_for(name)
+        .filter(|_| shared.general.photos && !high_contrast)
+        .and_then(|p| Some((p, super::mouse_art::photo_art(p.file)?)));
+    let key = wanted.map(|(p, _)| (p.file, shared.photos));
+    if with_app(|a| a.view.mouse.as_ref().map(|m| m.photo_key)).flatten() == Some(key) {
+        return;
+    }
+    let photo = wanted.and_then(|(p, pa)| {
+        let bytes = crate::photos::load(&crate::photos::dir()?, p)?;
+        Some((pa, Rc::<[u8]>::from(bytes)))
+    });
+    with_app(|a| {
+        if let Some(m) = a.view.mouse.as_mut() {
+            m.photo_key = key;
+            m.photo = photo;
+            m.picture = None;
+        }
+    });
+}
+
+/// The mouse behind a point: (x, y) relative to it, px per unit, drawing
+/// and photo.
+type Behind = (
+    i32,
+    i32,
+    f32,
+    &'static super::mouse_art::Art,
+    Option<Rc<glyph::Picture>>,
+);
+
 /// A point of the drawing: a 12 px circle (hollow when the button cannot
 /// change), a 2 px ring when chosen, the focus ring outside it.
 fn draw_dot(
     dis: &DRAWITEMSTRUCT,
     chosen: bool,
     locked: bool,
-    behind: Option<(i32, i32, f32, &'static super::mouse_art::Art)>,
+    behind: Option<Behind>,
     palette: &Palette,
     scale: f32,
 ) {
@@ -4785,21 +4966,53 @@ fn draw_dot(
             bottom: h,
         };
         panel::fill(mem, all, palette.bg_app);
+        let mut on_photo = false;
         if let Some(mut c) = Canvas::new(mem, scale) {
-            if let Some((x, y, k, art)) = behind {
-                glyph::mouse(&mut c, x as f32, y as f32, k, scale, art, palette);
+            if let Some((x, y, k, art, pic)) = behind {
+                on_photo = pic.is_some();
+                backdrop(
+                    &mut c,
+                    (x as f32, y as f32, k),
+                    art,
+                    pic.as_deref(),
+                    scale,
+                    palette,
+                );
                 c.origin(0.0, 0.0);
             }
+            // On a photo (a dark mouse on the page background) the point
+            // keeps the dark theme's light circle, and its rings get a dark
+            // halo so they show on the mouse and on a light background.
+            let palette = if on_photo {
+                &super::theme::DARK
+            } else {
+                palette
+            };
             let (uw, uh) = (w as f32 / scale, h as f32 / scale);
             let (cx, cy) = (uw / 2.0, uh / 2.0);
             let circle = |r: f32| (cx - r, cy - r, 2.0 * r);
+            let ring = |r: f32, width: f32, color: Color, dashed: bool| {
+                let (x, y, d) = circle(r);
+                if on_photo {
+                    let (hx, hy, hd) = circle(r + 1.0);
+                    c.stroke_round_rect(
+                        hx,
+                        hy,
+                        hd,
+                        hd,
+                        r + 1.0,
+                        width + 2.0,
+                        palette.bg_app,
+                        false,
+                    );
+                }
+                c.stroke_round_rect(x, y, d, d, r, width, color, dashed);
+            };
             if has(ODS_FOCUS) && !has(ODS_NOFOCUSRECT) {
-                let (x, y, d) = circle(13.0);
-                c.stroke_round_rect(x, y, d, d, 13.0, 1.5, palette.focus_ring, true);
+                ring(13.0, 1.5, palette.focus_ring, true);
             }
             if chosen {
-                let (x, y, d) = circle(10.5);
-                c.stroke_round_rect(x, y, d, d, 10.5, 2.0, palette.text_primary, false);
+                ring(10.5, 2.0, palette.text_primary, false);
             }
             let (x, y, d) = circle(6.0);
             if locked {
@@ -5206,6 +5419,23 @@ fn current_edits() -> Option<Current> {
     .flatten()
 }
 
+/// «Activar la memoria del ratón»: the mouse goes back to what it has saved.
+fn confirm_activate(view: HWND) {
+    super::confirm::open(
+        view,
+        "¿Activar la memoria del ratón?",
+        "El ratón volverá a usar los botones y el DPI guardados en su memoria (los que le dejó G HUB u otro programa). Después podrás verlos y cambiarlos aquí.
+
+No se escribe nada en su memoria. Si otro programa la vuelve a desactivar, tendrás que repetirlo.",
+        "Activar",
+        Box::new(move || {
+            send_write(view, Write::Activate, |key| {
+                Command::ActivateOnboard(key, Confirmed::by_dialog())
+            })
+        }),
+    );
+}
+
 fn confirm_save(view: HWND) {
     let Some((edits, base_dpi, base_light, buttons)) = current_edits() else {
         return;
@@ -5215,19 +5445,35 @@ fn confirm_save(view: HWND) {
         return;
     }
     let lines = change_lines(&edits, base_dpi, base_light, &buttons);
-    let title = format!(
-        "¿Guardar {} en la memoria del ratón?",
-        plural(n, "cambio", "cambios")
-    );
-    let body = format!(
-        "{}\n\nEl ratón los conservará aunque cierres OpenPeripheral o lo uses en otro PC. Si la comprobación de la escritura falla, OpenPeripheral deja el perfil como estaba.",
-        lines.join("\n")
-    );
+    // Saved in the app, never in the mouse (`Snapshot::saves_in_app`).
+    let auto = super::snapshot().is_some_and(|shared| {
+        with_app(|a| {
+            let m = a.view.mouse.as_ref()?;
+            snapshot(&shared, &m.key).map(|s| s.saves_in_app())
+        })
+        .flatten()
+        .unwrap_or(false)
+    });
+    let changes = plural(n, "cambio", "cambios");
+    let (title, note, action) = if auto {
+        (
+            format!("¿Guardar {changes}?"),
+            "OpenPeripheral los aplicará cada vez que conectes el ratón. No se escriben en su memoria.",
+            "Guardar",
+        )
+    } else {
+        (
+            format!("¿Guardar {changes} en la memoria del ratón?"),
+            "El ratón los conservará aunque cierres OpenPeripheral o lo uses en otro PC. Si la comprobación de la escritura falla, OpenPeripheral deja el perfil como estaba.",
+            "Guardar en el ratón",
+        )
+    };
+    let body = format!("{}\n\n{note}", lines.join("\n"));
     super::confirm::open(
         view,
         &title,
         &body,
-        "Guardar en el ratón",
+        action,
         Box::new(move || {
             send_write(view, Write::Save, |key| {
                 Command::SaveProfile(key, edits, Confirmed::by_dialog())
@@ -5823,7 +6069,7 @@ fn discard_and_leave(view: HWND) {
 // ---------------------------------------------------------------------------
 // Commands.
 
-fn dpi_range(shared: &Shared) -> Option<(u16, DpiRange)> {
+fn dpi_range(shared: &Shared) -> Option<(Option<u16>, DpiRange)> {
     let key = with_app(|a| a.view.mouse.as_ref().map(|m| m.key.clone())).flatten()?;
     snapshot(shared, &key).and_then(current_dpi)
 }
@@ -6072,6 +6318,7 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
             }
         }
         (ID_PRF_SAVEAS, BN_CLICKED) => new_profile(view, true),
+        (ID_BTN_ACTIVATE, BN_CLICKED) => confirm_activate(view),
         (ID_PRF_REAPPLY, BN_CLICKED) => {
             if let Some((_, list, Some(active))) = profile_list() {
                 if let Some(i) = list.iter().position(|p| p.name == active) {
@@ -6084,7 +6331,9 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
             if let Some(shared) = super::snapshot() {
                 if let Some((cur, range)) = dpi_range(&shared) {
                     let typed = ctl(ID_DPI_EDIT).map(get_text).unwrap_or_default();
-                    let from = parse_field(&typed).unwrap_or(cur);
+                    let from = parse_field(&typed)
+                        .or(cur)
+                        .unwrap_or_else(|| bounds(&range).0);
                     let v = step(&range, from, if id == ID_PLUS { 1 } else { -1 });
                     set(ID_DPI_EDIT, &v.to_string());
                 }
@@ -6112,6 +6361,35 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every button of a mouse with up to 16 is on the page, as a point
+    /// or as a row (plan `banco-ratones-virtuales`, finding 1).
+    #[test]
+    fn every_button_up_to_sixteen_is_on_the_page() {
+        use crate::devices::sim;
+        for n in 1..=20usize {
+            let buttons: Vec<Action> = (0..n)
+                .map(|i| Action::decode(sim::factory_button(i)))
+                .collect();
+            assert_eq!(button_rows(&buttons, &[]).len(), n);
+            for drawn in [6, 8] {
+                for stacked in [false, true] {
+                    let reachable = (0..MAX_BUTTONS as usize)
+                        .filter(|&i| {
+                            let v = button_view(i, n, drawn, stacked);
+                            v.point || v.row
+                        })
+                        .count();
+                    assert_eq!(reachable, n.min(16), "{n} buttons, {drawn} points");
+                    for i in 0..n.min(16) {
+                        let v = button_view(i, n, drawn, stacked);
+                        assert!(!(v.label && v.row), "{n}/{i}: label and row");
+                        assert_eq!(v.label, i < drawn && !stacked);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn advanced_lists_only_the_programs_of_the_active_profile() {
@@ -6327,7 +6605,7 @@ mod tests {
         );
         assert!(invalid_message(&G305, "").starts_with("Error: El campo está vacío."));
         assert_eq!(
-            range_sentence(&G305),
+            range_sentence(&G305, false),
             "DPI con el que arranca el ratón. Admite de 200 a 12000, en pasos de 50. Al guardarlo se escribe en los 4 niveles del botón DPI."
         );
     }

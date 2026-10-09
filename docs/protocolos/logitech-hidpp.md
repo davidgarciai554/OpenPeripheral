@@ -20,7 +20,8 @@ Implementación: `src/protocol/hidpp.rs`, `src/protocol/onboard.rs` (perfiles in
 | Feature | Función | Uso | Escribe |
 | --- | --- | --- | --- |
 | 0x0000 | fn0 getFeature, fn1 ping | Resolver índices y detectar dispositivos | No |
-| 0x0005 | fn0 longitud, fn1 trozo | Nombre del modelo | No |
+| 0x0005 | fn0 longitud, fn1 trozo | Nombre del modelo (se quitan caracteres de control y bidi; máx. 64) | No |
+| 0x0005 | fn2 getDeviceType | Tipo (3 ratón, 4 trackpad, 5 trackball). Solo en dispositivos detectados automáticamente: los demás tipos no se abren como ratón | No |
 | 0x1000 | fn0 | Batería: %, siguiente nivel, estado (0 descarga; 1, 2, 4 cargando; 3 completa) | No |
 | 0x1004 | fn1 | Batería unificada: %, nivel, estado (0 descarga; 1, 2 cargando; 3 completa) | No |
 | 0x2201 | fn1 lista, fn2 actual | DPI permitido y actual | No |
@@ -39,9 +40,12 @@ Lista de DPI: valores u16 big-endian terminados en 0. Si un valor tiene los tres
 
 ## Perfiles integrados (0x8100)
 
-Solo se interpreta lo observado en un G305 (formato de perfil 3). Cualquier otro formato se trata como «no compatible» y no se lee ni se escribe.
+Solo se interpreta lo observado en un G305 (formato de perfil 3) y en un G203 LIGHTSYNC (formato 4, ver más abajo). Cualquier otro formato se trata como «no compatible» y no se lee ni se escribe.
 
 - **getInfo (fn0):** byte 1 formato de perfil, byte 3 número de perfiles, byte 5 número de botones y bytes 7–8 tamaño de sector (u16 big-endian). G305: formato 3, 1 perfil, 6 botones y sectores de 255 bytes.
+- **getOnboardMode (fn2):** `1` perfiles integrados, `2` modo host. Antes de leer el perfil se comprueba que sea `1`: en modo host el perfil no está en uso y `getCurrentProfile` devuelve `0x0000`. Si no es `1`, la app muestra «La memoria del ratón está desactivada…» y guarda el DPI en la app.
+- **setOnboardMode (fn1), solo con el parámetro `1`:** lo envía el botón «Activar la memoria del ratón», siempre tras una confirmación y solo en modelos verificados. Después la app comprueba que el modo sea `1`. Nunca envía `2`.
+  - Verificado en el G203 el 2026-10-09: el ratón siguió en modo `1` tras desconectarlo y reconectarlo, y la memoria del perfil no cambió.
 - **getCurrentProfile (fn4):** sector del perfil activo (u16 big-endian). G305: `0x0001`.
 - **memoryRead (fn5):** parámetros sector (u16) y desplazamiento (u16); devuelve 16 bytes. Leer más allá del final del sector se rechaza, así que la última lectura se alinea a `tamaño − 16`.
 - **Escritura:**
@@ -130,3 +134,36 @@ Fuentes: lectura de la tabla de features y de `0x8070` con funciones de consulta
   - Con «enlace establecido» espera 1,5 s, agrupa los avisos repetidos y pide al worker que vuelva a enviar en vivo el DPI y la luz guardados en la app.
   - Verificado con dos ciclos de apagado y encendido: el sensor volvió de 1600 a 900 DPI en 2,2–3,6 s, y la luz se restableció.
 - **No verificado:** si el despertar tras reposo emite este aviso.
+
+### Formato 4: G203 LIGHTSYNC (lectura propia, solo lectura, 2026-10-09)
+
+- Ratón por cable 046D:C092, índice `0xFF`. `getInfo`: `01 04 01 01 01 06 10 00 FF 0A 01`. Formato 4, 1 perfil, 6 botones, 16 sectores de 255 bytes.
+- `getOnboardMode` devolvió `2` (modo host). En ese momento estaba en marcha el servicio `logi_lamparray_service` de Logitech, pero no G HUB. **Hipótesis sin verificar:** es ese servicio quien lo pone en modo host.
+- Directorio `00 01 01 FF…`, con CRC válido, y perfil de usuario en `0x0001`, también con CRC válido. La copia de fábrica `0x0101` no tiene CRC, como en el G305.
+- **Igual que el formato 3:**
+  - ciclo de DPI en `0x03`, 4 valores u16 little-endian y `00 00`. Usuario: 800/850/1600/3200; fábrica: 400/800/1600/3200;
+  - botones desde `0x20`, 4 bytes cada uno: `80 01` ratón, `80 02` tecla y `90 05` en el botón DPI de fábrica.
+- **Distinto o sin interpretar:**
+  - Una entrada `00 02 00 00` en el sexto botón del perfil de usuario; se supone una macro en el sector 2, que está vacío. Se conserva sin tocar.
+  - La luz: el bloque `0xD0` empieza por `04` y el `0xDB` está a ceros; en la copia de fábrica, `0xDB` usa el efecto `04`, que no está verificado.
+  - Nombre del perfil en UTF-16 en `0xA0` («PROFILE_NAME_DEFAULT»).
+- **Uso en la app:** en el formato 4 solo se editan botones y DPI. La luz del perfil no se ofrece (`effects` vacío) y «De fábrica» copia DPI y botones, nunca los bloques de luz.
+- **Prueba del modo (2026-10-09, con permiso del usuario):**
+  - Con la iluminación dinámica de Windows desactivada 15 s en el registro del usuario (y restaurada), el ratón siguió en modo `2`.
+  - Se le envió `setOnboardMode(1)` (fn1, parámetro `01`; es la única escritura): respondió `00 00` y pasó a modo `1`. Siguió en `1` durante 30 s y también más de un minuto después, con `getCurrentProfile` = `0x0001`.
+  - Conclusión: ningún programa en ejecución lo devolvió al modo host. El modo `2` era un estado que se había quedado puesto, no un control activo. Quién lo dejó así (G HUB en el pasado o el servicio LampArray al conectar) y si se mantiene al desconectarlo **no está verificado**.
+- **Escritura desde la app (2026-10-09, el usuario):** tras desconectar y reconectar, el ratón siguió en modo `1`. Se creó la copia original y se guardó desde la app.
+  - Relectura de solo lectura del sector `0x0001`: las 4 entradas del ciclo de DPI pasaron a `20 03` (800) y el CRC pasó a `1A 6D`, válido.
+  - Los botones y los bloques de luz `0xD0–0xE5` quedaron idénticos a la lectura inicial.
+  - El usuario confirma que funciona («ya funciona perfecto»).
+- **Botones verificados (2026-10-09):** el lateral trasero pasó de Ctrl+V a Atrás y volvió a Ctrl+V desde la app. La memoria releída cambió solo en esa entrada y en el CRC, y al final quedó idéntica byte a byte. El usuario comprobó físicamente que el lateral pega y el delantero copia.
+
+## Detección automática (2026-10-09)
+
+- **Bluetooth (2026-10-09, plan `cualquier-raton`, fase 3):** un ratón Logitech emparejado por Bluetooth habla HID++ por la colección de página `0xFF43`, en el índice `0xFF` y solo con informes largos. `lookup` acepta esa colección con VID `046D` como `AUTO_LOGITECH_BT`: conexión «Bluetooth», solo ajustes volátiles y el mismo filtro de `getDeviceType`. **No verificado en hardware:** no había ningún ratón Logitech Bluetooth. Lo cubren el simulador y el catálogo (MX Master 3S y 4).
+
+- Cualquier colección `0xFF00/0x0002` con VID `046D` que no esté en `SUPPORTED` se prueba como `AUTO_LOGITECH`: ping (índice `0xFF` por cable, `1–6` tras un receptor), nombre y `getDeviceType`. Solo se aceptan ratones, trackpads y trackballs con nombre.
+- Un modelo así no tiene el perfil integrado habilitado (`onboard: false`): `read_profile` responde «no admitido» sin enviar nada. Solo se usan `0x2201` (DPI, volátil), `0x8070` (luz, con el byte de persistencia a 0), la batería y `0x8060` de lectura.
+- Las rutas que no responden se omiten en los sondeos periódicos y se reintentan al cambiar los dispositivos, al pulsar «Actualizar», con una notificación de conexión o cada 5 minutos (un ratón dormido tras un receptor no avisa al despertar).
+- Guardar el DPI o la luz de un modelo así no escribe en su memoria: se guarda en la configuración de la app, que lo reaplica al conectarlo.
+- Probado en un G203 LIGHTSYNC por cable (046D:C092, interfaz 1): responde en `0xFF`, DPI 50–8000 con paso 50 y 1000 Hz.

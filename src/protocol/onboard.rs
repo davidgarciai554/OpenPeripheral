@@ -54,8 +54,16 @@ pub fn parse_info(p: &[u8]) -> Option<Info> {
 
 /// Offset of the first button entry in a format-3 profile.
 const BUTTONS_OFFSET: usize = 0x20;
-/// Highest profile format whose button layout has been observed.
-pub const KNOWN_FORMAT: u8 = 3;
+/// The G-shift copy of the buttons starts here (observed on the G203), so
+/// these formats hold at most 16 buttons; a profile declaring more has a
+/// layout never seen and is not read nor written.
+const GSHIFT_OFFSET: usize = 0x60;
+pub const MAX_BUTTONS: u8 = ((GSHIFT_OFFSET - BUTTONS_OFFSET) / 4) as u8;
+/// Profile formats whose DPI and button layout have been observed: 3 (G305)
+/// and 4 (G203 LIGHTSYNC).
+pub const KNOWN_FORMATS: [u8; 2] = [3, 4];
+/// The only format whose profile light block has been verified (G305).
+pub const LIGHT_FORMAT: u8 = 3;
 
 /// A button assignment. Unknown encodings stay `Raw` and are never altered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +225,8 @@ const DPI_ENTRIES: usize = 4;
 /// is never written.
 const LIGHT_OFFSET: usize = 0xdb;
 const LIGHT_LEN: usize = 11;
+/// Both light blocks (0xD0 and the active one).
+const LIGHT_BLOCKS: std::ops::Range<usize> = 0xd0..LIGHT_OFFSET + LIGHT_LEN;
 
 /// Closed speed tables (period in ms), slow to fast. Observed on the G305:
 /// cycle 8000 ms = about 8 s per turn, breathing 2000 and 6000 ms.
@@ -331,15 +341,15 @@ pub struct ProfileEdits {
 }
 
 /// Checks the layout this code relies on: CRC, length, the DPI terminator
-/// and a known light effect.
-fn known_layout(user: &[u8], button_count: u8) -> bool {
-    let buttons_end = BUTTONS_OFFSET + 4 * button_count as usize;
+/// and, when light can be edited, a known light effect.
+fn known_layout(user: &[u8], limits: &Limits) -> bool {
+    let buttons_end = BUTTONS_OFFSET + 4 * limits.button_count as usize;
     let dpi_end = DPI_OFFSET + 2 * DPI_ENTRIES;
     crc_ok(user)
         && user.len() >= LIGHT_OFFSET + LIGHT_LEN + 2
-        && buttons_end <= LIGHT_OFFSET
+        && buttons_end <= GSHIFT_OFFSET
         && user[dpi_end..dpi_end + 2] == [0, 0]
-        && parse_light(user).is_some()
+        && (limits.effects.is_empty() || parse_light(user).is_some())
 }
 
 /// Builds the image for one save from the profile read from the device
@@ -353,7 +363,7 @@ pub fn apply_edits(
     edits: &ProfileEdits,
 ) -> Result<ProfileImage, EditError> {
     let sector = UserSector::new(sector, directory).ok_or(EditError::BadProfile)?;
-    if !known_layout(user, limits.button_count) {
+    if !known_layout(user, limits) {
         return Err(EditError::BadProfile);
     }
     let mut bytes = user.to_vec();
@@ -391,15 +401,18 @@ pub fn apply_edits(
     })
 }
 
-/// Image that writes back a previously saved copy of the same sector.
+/// Image that writes back a previously saved copy of the same sector. When
+/// light cannot be edited (`limits.effects` empty), both light blocks keep
+/// what the mouse holds now (`current`).
 pub fn restore_image(
     saved: &[u8],
     current: &[u8],
     sector: u16,
     directory: &[u8],
+    limits: &Limits,
 ) -> Result<ProfileImage, EditError> {
     let sector = UserSector::new(sector, directory).ok_or(EditError::BadProfile)?;
-    if !crc_ok(saved) || saved.len() != current.len() || saved.len() < BUTTONS_OFFSET + 6 {
+    if !crc_ok(saved) || saved.len() != current.len() || saved.len() < LIGHT_BLOCKS.end + 2 {
         return Err(EditError::BadProfile);
     }
     // A copy without a left click (e.g. taken after another program
@@ -410,14 +423,17 @@ pub fn restore_image(
     if Action::decode(left) != Action::Mouse(0x01) {
         return Err(EditError::LeftButton);
     }
-    Ok(ProfileImage {
-        sector,
-        bytes: saved.to_vec(),
-    })
+    let mut bytes = saved.to_vec();
+    if limits.effects.is_empty() && bytes[LIGHT_BLOCKS] != current[LIGHT_BLOCKS] {
+        bytes[LIGHT_BLOCKS].copy_from_slice(&current[LIGHT_BLOCKS]);
+        bytes = with_crc(bytes);
+    }
+    Ok(ProfileImage { sector, bytes })
 }
 
 /// Image that copies the factory DPI cycle, active light block and button
-/// entries (`rom`) into the current profile; every other byte is kept.
+/// entries (`rom`) into the current profile; every other byte is kept. The
+/// light block is copied only when light can be edited (`limits.effects`).
 pub fn factory_image(
     current: &[u8],
     rom: &[u8],
@@ -426,17 +442,18 @@ pub fn factory_image(
     limits: &Limits,
 ) -> Result<ProfileImage, EditError> {
     let sector = UserSector::new(sector, directory).ok_or(EditError::BadProfile)?;
-    if !known_layout(current, limits.button_count) || current.len() != rom.len() {
+    if !known_layout(current, limits) || current.len() != rom.len() {
         return Err(EditError::BadProfile);
     }
+    let light = !limits.effects.is_empty();
     let buttons_end = BUTTONS_OFFSET + 4 * limits.button_count as usize;
     let ranges = [
-        DPI_OFFSET..DPI_OFFSET + 2 * DPI_ENTRIES + 2,
-        BUTTONS_OFFSET..buttons_end,
-        LIGHT_OFFSET..LIGHT_OFFSET + LIGHT_LEN,
+        Some(DPI_OFFSET..DPI_OFFSET + 2 * DPI_ENTRIES + 2),
+        Some(BUTTONS_OFFSET..buttons_end),
+        light.then_some(LIGHT_OFFSET..LIGHT_OFFSET + LIGHT_LEN),
     ];
     let mut bytes = current.to_vec();
-    for r in ranges {
+    for r in ranges.into_iter().flatten() {
         bytes[r.clone()].copy_from_slice(&rom[r]);
     }
     // The factory copy must pass the same checks as an edit.
@@ -445,8 +462,9 @@ pub fn factory_image(
             && c.iter()
                 .all(|&d| d == 0 || limits.dpi.is_some_and(|r| r.contains(d)))
     });
-    let light_ok = parse_light(&bytes)
-        .is_some_and(|l| l == Light::Off || limits.effects.contains(&l.effect_id()));
+    let light_ok = !light
+        || parse_light(&bytes)
+            .is_some_and(|l| l == Light::Off || limits.effects.contains(&l.effect_id()));
     if !dpi_ok || !light_ok {
         return Err(EditError::BadProfile);
     }
@@ -466,7 +484,8 @@ pub fn factory_image(
 
 #[cfg(test)]
 pub(crate) mod samples {
-    //! Real sectors read from a G305 (no serial numbers or personal data).
+    //! Real sectors read from a G305 and a G203 LIGHTSYNC (no serial
+    //! numbers or personal data).
 
     fn sector(lines: &[&str]) -> Vec<u8> {
         let mut v: Vec<u8> = lines
@@ -536,6 +555,67 @@ pub(crate) mod samples {
 
     /// Effect ids declared by the G305 (0x8070 getZoneEffectInfo).
     pub const EFFECTS: [u16; 4] = [0x00, 0x01, 0x03, 0x0a];
+
+    // Real sectors read from a G203 LIGHTSYNC (profile format 4, 2026-10-09),
+    // read only. The profile name is the factory default.
+
+    fn full(lines: &[&str]) -> Vec<u8> {
+        lines
+            .iter()
+            .flat_map(|l| l.split_whitespace())
+            .map(|h| u8::from_str_radix(h, 16).unwrap())
+            .collect()
+    }
+
+    pub fn g203_directory() -> Vec<u8> {
+        with_crc(sector(&["00 01 01 ff"]), [0x68, 0xce])
+    }
+
+    const G203_USER: [&str; 16] = [
+        "01 02 01 20 03 52 03 40 06 80 0c 00 00 ff ff ff",
+        "ff 00 ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "80 01 00 01 80 01 00 02 80 01 00 04 80 02 01 19",
+        "80 02 01 06 00 02 00 00 ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "80 01 00 01 80 01 00 02 80 01 00 04 80 02 01 19",
+        "80 02 01 06 00 02 00 02 ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "50 00 52 00 4f 00 46 00 49 00 4c 00 45 00 5f 00",
+        "4e 00 41 00 4d 00 45 00 5f 00 44 00 45 00 46 00",
+        "41 00 55 00 4c 00 54 00 00 00 00 00 00 00 00 00",
+        "04 00 00 00 00 00 00 40 01 64 1f 00 00 00 00 00",
+        "00 00 00 00 00 00 00 ff ff ff ff ff ff ff ff ff",
+        "ff 00 00 00 00 00 00 00 00 00 00 00 00 c1 91",
+    ];
+    pub fn g203_user() -> Vec<u8> {
+        full(&G203_USER)
+    }
+
+    const G203_ROM: [&str; 16] = [
+        "01 01 00 90 01 20 03 40 06 80 0c 00 00 ff ff ff",
+        "ff 00 ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "80 01 00 01 80 01 00 02 80 01 00 04 80 01 00 08",
+        "80 01 00 10 90 05 ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+        "04 00 00 00 00 00 00 40 01 00 1f 04 00 00 00 00",
+        "00 00 40 01 00 1f 00 ff ff ff ff ff ff ff ff ff",
+        "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff",
+    ];
+
+    /// The factory copy has no CRC, like the G305's.
+    pub fn g203_rom() -> Vec<u8> {
+        full(&G203_ROM)
+    }
 }
 
 #[cfg(test)]
@@ -651,6 +731,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn g203_format_4_edits_buttons_and_dpi_but_never_light() {
+        let (user, dir, rom) = (
+            samples::g203_user(),
+            samples::g203_directory(),
+            samples::g203_rom(),
+        );
+        assert!(crc_ok(&user) && crc_ok(&dir) && !crc_ok(&rom));
+        assert_eq!(parse_directory(&dir), [(1, true)]);
+        assert_eq!(parse_dpi_cycle(&user), Some([800, 850, 1600, 3200]));
+        let buttons = parse_buttons(&user, 6).unwrap();
+        assert_eq!(
+            buttons[3],
+            Action::Keyboard {
+                modifiers: 1,
+                usage: 0x19
+            }
+        );
+        // The sixth entry (`00 02 00 00`) is not understood: kept as is.
+        assert_eq!(buttons[5], Action::Raw([0, 2, 0, 0]));
+        let range = DpiRange::Range {
+            min: 50,
+            max: 8000,
+            step: 50,
+        };
+        // Format 4 is read without light effects (`read_profile`).
+        let limits = Limits {
+            button_count: 6,
+            dpi: Some(&range),
+            effects: &[],
+        };
+        let e = ProfileEdits {
+            dpi: Some(1200),
+            buttons: vec![(3, Action::Mouse(0x08))],
+            ..Default::default()
+        };
+        let img = apply_edits(&user, 1, &dir, &limits, &e).unwrap();
+        assert!(crc_ok(img.bytes()));
+        for (i, (a, b)) in user.iter().zip(img.bytes()).enumerate() {
+            let allowed = (0x03..0x0b).contains(&i) || (0x2c..0x30).contains(&i) || i >= 253;
+            assert!(a == b || allowed, "byte {i:#x} changed");
+        }
+        let e = ProfileEdits {
+            light: Some(Light::Fixed(RED)),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_edits(&user, 1, &dir, &limits, &e),
+            Err(EditError::BadLight)
+        );
+        // Factory: DPI and buttons from the ROM; both light blocks untouched.
+        let img = factory_image(&user, &rom, 1, &dir, &limits).unwrap();
+        let b = img.bytes();
+        assert_eq!(b[0xd0..0xe6], user[0xd0..0xe6]);
+        assert_eq!(parse_buttons(b, 6), parse_buttons(&rom, 6));
+        assert_eq!(parse_dpi_cycle(b), Some([400, 800, 1600, 3200]));
+        assert!(crc_ok(b));
+        // Restoring a copy taken with another light keeps the current light.
+        let mut lit = user.clone();
+        lit[0xdb..0xdf].copy_from_slice(&[0x01, 0xff, 0, 0]);
+        let lit = with_crc(lit);
+        let back = restore_image(&user, &lit, 1, &dir, &limits).unwrap();
+        assert_eq!(back.bytes()[0xd0..0xe6], lit[0xd0..0xe6]);
+        assert_eq!(back.bytes()[..0xd0], user[..0xd0]);
+        assert!(crc_ok(back.bytes()));
+        // Unchanged light: the saved copy goes back byte for byte.
+        let back = restore_image(&user, img.bytes(), 1, &dir, &limits).unwrap();
+        assert_eq!(back.bytes(), user.as_slice());
+    }
+
     fn edit_profile(user: &[u8], edits: &ProfileEdits) -> Result<ProfileImage, EditError> {
         let range = samples::dpi_range();
         apply_edits(user, 1, &samples::directory(), &limits(&range), edits)
@@ -760,7 +910,7 @@ mod tests {
                 )
                 .is_err()
             );
-            assert!(restore_image(&user, &user, sector, &dir).is_err());
+            assert!(restore_image(&user, &user, sector, &dir, &limits(&range)).is_err());
         }
         // A directory with a bad CRC is not trusted either.
         let mut bad_dir = dir.clone();
@@ -829,17 +979,39 @@ mod tests {
         }
         assert_eq!(parse_light(img.bytes()), Some(Light::Off));
         let edited = image(&[(3, Action::Mouse(0x08))]).unwrap();
-        let back = restore_image(&user, edited.bytes(), 1, &samples::directory()).unwrap();
+        let back = restore_image(
+            &user,
+            edited.bytes(),
+            1,
+            &samples::directory(),
+            &limits(&samples::dpi_range()),
+        )
+        .unwrap();
         assert_eq!(back.bytes(), user.as_slice());
         let mut tampered = user.clone();
         tampered[0x21] ^= 1;
-        assert!(restore_image(&tampered, &user, 1, &samples::directory()).is_err());
+        assert!(
+            restore_image(
+                &tampered,
+                &user,
+                1,
+                &samples::directory(),
+                &limits(&samples::dpi_range())
+            )
+            .is_err()
+        );
         // A valid copy whose left button is not a left click is refused.
         let mut no_left = user.clone();
         no_left[0x23] = 0x02;
         let no_left = with_crc(no_left);
         assert_eq!(
-            restore_image(&no_left, &user, 1, &samples::directory()),
+            restore_image(
+                &no_left,
+                &user,
+                1,
+                &samples::directory(),
+                &limits(&samples::dpi_range())
+            ),
             Err(EditError::LeftButton)
         );
     }

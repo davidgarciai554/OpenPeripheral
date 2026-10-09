@@ -7,6 +7,11 @@ pub const REPORT_LEN: usize = 90;
 
 /// Transaction id accepted by recent devices (verified on BlackWidow V3 TKL).
 pub const TRANSACTION_ID: u8 = 0x1f;
+/// Transaction ids of Razer mice by generation (public protocol facts):
+/// 0x1F recent (Basilisk V3, DeathAdder V3, Viper V3, Naga X), 0x3F the
+/// DeathAdder V2 family, 0xFF older models. Each mouse is probed with
+/// read-only commands until one answers.
+pub const MOUSE_TRANSACTION_IDS: [u8; 3] = [0x1f, 0x3f, 0xff];
 
 const STATUS_SUCCESS: u8 = 0x02;
 
@@ -29,6 +34,11 @@ pub enum Request {
     FirmwareVersion,
     /// Class 0x0F, id 0x02: static colour, never stored on the device.
     StaticColor(Rgb),
+    /// Class 0x04, id 0x85: current sensor DPI (X and Y). Read only.
+    GetDpi,
+    /// Class 0x04, id 0x05: sensor DPI, never stored (`NOSTORE`). There is
+    /// no stored variant in this app.
+    SetDpi { x: u16, y: u16 },
 }
 
 impl Request {
@@ -51,13 +61,25 @@ impl Request {
                     c.b,
                 ],
             ),
+            Request::GetDpi => (0x04, 0x85, vec![NOSTORE, 0, 0, 0, 0, 0, 0]),
+            Request::SetDpi { x, y } => {
+                let ([xh, xl], [yh, yl]) = (x.to_be_bytes(), y.to_be_bytes());
+                (0x04, 0x05, vec![NOSTORE, xh, xl, yh, yl, 0, 0])
+            }
         }
     }
 
+    /// With the keyboard's transaction id (tests).
+    #[cfg(test)]
     pub fn encode(&self) -> [u8; REPORT_LEN] {
+        self.encode_with(TRANSACTION_ID)
+    }
+
+    /// Same, with the transaction id of a given device.
+    pub fn encode_with(&self, transaction_id: u8) -> [u8; REPORT_LEN] {
         let (class, id, args) = self.class_id_args();
         let mut r = [0u8; REPORT_LEN];
-        r[1] = TRANSACTION_ID;
+        r[1] = transaction_id;
         r[5] = args.len() as u8;
         r[6] = class;
         r[7] = id;
@@ -103,6 +125,13 @@ pub fn parse_firmware(args: &[u8]) -> Option<(u8, u8)> {
     Some((*args.first()?, *args.get(1)?))
 }
 
+/// DPI of a `GetDpi` reply (storage, X big-endian, Y big-endian): the X
+/// value, if it is a real DPI.
+pub fn parse_dpi(args: &[u8]) -> Option<u16> {
+    let x = u16::from_be_bytes([*args.get(1)?, *args.get(2)?]);
+    (100..=45000).contains(&x).then_some(x)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +166,24 @@ mod tests {
         r[8..8 + args.len()].copy_from_slice(args);
         r[88] = crc(&r);
         r
+    }
+
+    #[test]
+    fn dpi_requests_never_store() {
+        let r = Request::SetDpi { x: 1600, y: 1600 }.encode_with(0x3f);
+        assert_eq!(r[1], 0x3f);
+        assert_eq!(
+            &r[5..15],
+            &[7, 0x04, 0x05, NOSTORE, 0x06, 0x40, 0x06, 0x40, 0, 0]
+        );
+        assert_eq!(r[88], crc(&r));
+        let r = Request::GetDpi.encode_with(0xff);
+        assert_eq!(&r[..9], &[0, 0xff, 0, 0, 0, 7, 0x04, 0x85, NOSTORE]);
+        let sent = Request::GetDpi.encode();
+        let reply = reply_to(&sent, 0x02, &[0, 0x03, 0x20, 0x03, 0x20]);
+        assert_eq!(parse_dpi(parse_reply(&sent, &reply).unwrap()), Some(800));
+        assert_eq!(parse_dpi(&[0, 0, 0]), None);
+        assert_eq!(parse_dpi(&[0]), None);
     }
 
     #[test]

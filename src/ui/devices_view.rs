@@ -164,6 +164,7 @@ pub(crate) fn open() {
         a.view.scroll = 0;
     });
     theme::apply_title_bar(hwnd, &palette);
+    theme::apply_scroll_bars(hwnd, &palette);
     unsafe {
         // Client area of the design (1440×900, so «Ajustes del ratón» shows
         // its three panels), clamped to the work area of the monitor.
@@ -329,6 +330,7 @@ pub(crate) fn refresh() {
     if rethemed {
         with_app(|a| a.view.palette = palette);
         theme::apply_title_bar(view, &palette);
+        theme::apply_scroll_bars(view, &palette);
     }
     let redraw_all = || unsafe {
         let _ = RedrawWindow(
@@ -605,7 +607,10 @@ pub(super) fn relayout(view: HWND) {
                         scale: g.scale,
                         compact: g.compact,
                     };
-                    if let Some((_, br)) = panel::layout(&ctx, kind, &shared, w, ht).button {
+                    let button = panel::layout(&ctx, kind, &shared, w, ht).button;
+                    // Cards without settings have no button at all.
+                    let _ = ShowWindow(b, if button.is_some() { SW_SHOWNA } else { SW_HIDE });
+                    if let Some((_, br)) = button {
                         // Grow by the focus ring area drawn inside the control.
                         let o = (4.0 * g.scale) as i32;
                         let _ = SetWindowPos(
@@ -665,10 +670,16 @@ fn relayout_mouse(view: HWND) {
         let _ = GetClientRect(view, &mut rc);
     }
     let scroll = with_app(|a| a.view.scroll).unwrap_or(0);
-    let height = mouse_settings::layout(view, &g, scroll);
+    let old_bar_h = mouse_windows().map(|w| w.2);
+    let mut height = mouse_settings::layout(view, &g, scroll);
     let Some((content, bar, bar_h)) = mouse_windows() else {
         return;
     };
+    // The page fits its cards to the space above the bar: lay out again
+    // with the bar's new height.
+    if old_bar_h != Some(bar_h) {
+        height = mouse_settings::layout(view, &g, scroll);
+    }
     // The page shows above the bar; the bar sits on the bottom edge.
     let page = (rc.bottom - bar_h).max(0);
     let clamped = scroll.clamp(0, (height - page).max(0));

@@ -123,6 +123,66 @@ pub static GENERIC: Art = Art {
     ],
 };
 
+/// A downloaded photo (`photos`) used instead of a drawing: the part of
+/// the photo shown, in source px, with the proportions of the drawings'
+/// box, and the points measured on it (plan `fotos-de-ratones`).
+pub struct PhotoArt {
+    pub file: &'static str,
+    pub crop: (f32, f32, f32, f32),
+    /// Same box and button order as the drawing; no lines.
+    pub art: Art,
+}
+
+/// The G305 photo (1180 × 1180, mouse within x 284–896, y 40–1140); points
+/// checked against the photo by overlay: buttons in profile order.
+pub static PHOTO_G305: PhotoArt = PhotoArt {
+    file: "logitech-g305.png",
+    crop: (231.0, 10.0, 718.0, 1160.0),
+    art: Art {
+        size: (260.0, 420.0),
+        body: &[],
+        seams: &[],
+        parts: &[],
+        points: &[
+            p(76.0, 98.0, Left),
+            p(184.0, 98.0, Right),
+            p(130.0, 85.0, Top),
+            p(25.0, 230.0, Left),
+            p(25.0, 167.0, Left),
+            p(130.0, 148.0, Right),
+        ],
+    },
+};
+
+/// The G203 photo (1180 × 1179, mouse within x 325–853, y 195–1132); points
+/// checked against the photo by overlay (2026-10-09): buttons in profile
+/// order, side buttons on the left (back is the lower one).
+pub static PHOTO_G203: PhotoArt = PhotoArt {
+    file: "logitech-g203.png",
+    crop: (286.0, 173.0, 607.0, 980.0),
+    art: Art {
+        size: (260.0, 420.0),
+        body: &[],
+        seams: &[],
+        parts: &[],
+        points: &[
+            p(71.0, 86.0, Left),
+            p(181.0, 86.0, Right),
+            p(130.0, 82.0, Top),
+            p(23.0, 230.0, Left),
+            p(23.0, 170.0, Left),
+            p(130.0, 141.0, Right),
+        ],
+    },
+};
+
+/// The photo layout for a photo file, if its points were measured.
+pub fn photo_art(file: &str) -> Option<&'static PhotoArt> {
+    [&PHOTO_G305, &PHOTO_G203]
+        .into_iter()
+        .find(|p| p.file == file)
+}
+
 /// The drawing of a mouse by its name.
 pub fn art_for(name: &str) -> &'static Art {
     if name.contains("G305") {
@@ -146,7 +206,7 @@ mod tests {
         // page shows.
         assert_eq!(G305.points.len(), 6);
         assert!(GENERIC.points.len() >= 6);
-        for a in [&G305, &GENERIC] {
+        for a in [&G305, &GENERIC, &PHOTO_G305.art, &PHOTO_G203.art] {
             assert!(a.points.iter().all(|p| inside(a, p.at)));
             for s in a.body.iter().chain(a.seams) {
                 match *s {
@@ -172,6 +232,14 @@ mod tests {
             }
         }
         assert!(std::ptr::eq(art_for("G305 Lightspeed"), &G305));
+        // Every photo of the download table has its points, with as many
+        // buttons as its drawing, and a crop in the drawing's proportions.
+        for photo in crate::photos::PHOTOS {
+            let pa = photo_art(photo.file).unwrap();
+            assert_eq!(pa.art.points.len(), G305.points.len());
+            let (_, _, w, h) = pa.crop;
+            assert!((w / h - pa.art.size.0 / pa.art.size.1).abs() < 0.01);
+        }
         assert!(std::ptr::eq(art_for("G502 X"), &GENERIC));
     }
 }

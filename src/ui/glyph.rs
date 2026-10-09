@@ -417,3 +417,130 @@ pub fn mouse(
     c.origin(ox, oy);
     c.scale = sc;
 }
+
+/// A mouse photo scaled once to the size of its box (plan
+/// `fotos-de-ratones`), so painting it, also behind each point, is a copy.
+pub struct Picture {
+    bmp: *mut GpBitmap,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// `PixelFormat32bppPARGB` (a macro in the SDK, not in the crate).
+const PARGB: i32 = 0x000E_200B;
+
+impl Picture {
+    /// Decodes `png` (bytes already checked by `photos::valid`) and draws
+    /// its `crop` (source px) into a `w` × `h` bitmap. None if GDI+ cannot.
+    pub fn scaled(png: &[u8], crop: (f32, f32, f32, f32), w: i32, h: i32) -> Option<Self> {
+        use windows::Win32::UI::Shell::SHCreateMemStream;
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        unsafe {
+            // The stream holds a copy of the bytes while `src` exists.
+            let stream = SHCreateMemStream(Some(png))?;
+            let mut src = std::ptr::null_mut();
+            if GdipCreateBitmapFromStream(&stream, &mut src) != Ok {
+                return None;
+            }
+            let mut dst = std::ptr::null_mut();
+            let mut g = std::ptr::null_mut();
+            let done = GdipCreateBitmapFromScan0(w, h, 0, PARGB, None, &mut dst) == Ok
+                && GdipGetImageGraphicsContext(dst.cast(), &mut g) == Ok;
+            if done {
+                GdipSetInterpolationMode(g, InterpolationModeHighQualityBicubic);
+                GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+                let (cx, cy, cw, ch) = crop;
+                GdipDrawImageRectRectI(
+                    g,
+                    src.cast(),
+                    0,
+                    0,
+                    w,
+                    h,
+                    cx as i32,
+                    cy as i32,
+                    cw as i32,
+                    ch as i32,
+                    UnitPixel,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                );
+            }
+            if !g.is_null() {
+                GdipDeleteGraphics(g);
+            }
+            GdipDisposeImage(src.cast());
+            if !done {
+                if !dst.is_null() {
+                    GdipDisposeImage(dst.cast());
+                }
+                return None;
+            }
+            Some(Picture { bmp: dst, w, h })
+        }
+    }
+}
+
+impl Drop for Picture {
+    fn drop(&mut self) {
+        unsafe {
+            GdipDisposeImage(self.bmp.cast());
+        }
+    }
+}
+
+/// The photo straight on the page background, without a plate (decision
+/// of the user, 2026-10-08): its transparent parts show the background.
+pub fn picture(c: &mut Canvas, x_px: f32, y_px: f32, pic: &Picture) {
+    unsafe {
+        GdipDrawImageRectI(
+            c.g,
+            pic.bmp.cast(),
+            x_px.round() as i32,
+            y_px.round() as i32,
+            pic.w,
+            pic.h,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 4×4 RGBA PNG with one red pixel.
+    const TINY: [u8; 73] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00, 0x00, 0xa9,
+        0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60,
+        0xc0, 0x06, 0xfe, 0x83, 0x11, 0xb1, 0x00, 0x00, 0x58, 0xeb, 0x01, 0xff, 0x57, 0x53, 0x91,
+        0x1a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn a_png_from_memory_is_decoded_and_scaled() {
+        let _gdi = GdiPlus::start().unwrap();
+        let p = Picture::scaled(&TINY, (0.0, 0.0, 4.0, 4.0), 8, 8).unwrap();
+        assert_eq!((p.w, p.h), (8, 8));
+        assert!(Picture::scaled(&TINY[..40], (0.0, 0.0, 4.0, 4.0), 8, 8).is_none());
+        assert!(Picture::scaled(&TINY, (0.0, 0.0, 4.0, 4.0), 0, 8).is_none());
+    }
+
+    /// The real photo (`OP_PHOTO` = path to logitech-g305.png): checked as
+    /// the app does and decoded at a typical size. Not run by default.
+    #[test]
+    #[ignore]
+    fn the_downloaded_photo_decodes() {
+        let path = std::env::var("OP_PHOTO").unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        assert!(crate::photos::valid(&crate::photos::PHOTOS[0], &bytes));
+        let _gdi = GdiPlus::start().unwrap();
+        let t = std::time::Instant::now();
+        let p = Picture::scaled(&bytes, (231.0, 10.0, 718.0, 1160.0), 291, 470).unwrap();
+        println!("decoded and scaled in {:?}", t.elapsed());
+        assert_eq!((p.w, p.h), (291, 470));
+    }
+}

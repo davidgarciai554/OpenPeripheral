@@ -27,6 +27,13 @@ const ID_INTRO: i32 = 1502;
 const ID_GEN_TITLE: i32 = 1510;
 const ID_STARTUP: i32 = 1511;
 const ID_STARTUP_HELP: i32 = 1512;
+const ID_PHOTOS: i32 = 1513;
+const ID_PHOTOS_HELP: i32 = 1514;
+const ID_SPEED: i32 = 1515;
+const ID_SPEED_SLOWER: i32 = 1516;
+const ID_SPEED_FASTER: i32 = 1517;
+const ID_SPEED_RESET: i32 = 1518;
+const ID_SPEED_HELP: i32 = 1519;
 const ID_LOOK_TITLE: i32 = 1520;
 const ID_THEME_LABEL: i32 = 1521;
 const ID_THEME0: i32 = 1522; // ..=1524
@@ -230,6 +237,50 @@ pub(crate) fn enter(view: HWND) {
         Kind::Text(Secondary, true),
         s,
         "OpenPeripheral se abre en la bandeja al iniciar sesión. También está en el menú de la bandeja.",
+        st,
+    );
+    add(
+        ID_PHOTOS,
+        Kind::Choice,
+        b,
+        "Descargar fotos de los ratones",
+        chk,
+    );
+    add(
+        ID_PHOTOS_HELP,
+        Kind::Text(Secondary, true),
+        s,
+        "Se conecta a img.openmouse.app (Cloudflare), un servidor externo, que ve tu IP y qué modelo pides; no se envía nada más. Si lo desactivas o falla, se usa el dibujo y se borran las fotos guardadas. Las fotos pertenecen a sus fabricantes.",
+        st,
+    );
+    add(ID_SPEED, Kind::Text(Strong, true), s, "", st);
+    // Names that make sense alone: a screen reader reads only the button.
+    add(
+        ID_SPEED_SLOWER,
+        Kind::Button(true),
+        b,
+        "Puntero más lento",
+        btn,
+    );
+    add(
+        ID_SPEED_FASTER,
+        Kind::Button(true),
+        b,
+        "Puntero más rápido",
+        btn,
+    );
+    add(
+        ID_SPEED_RESET,
+        Kind::Button(true),
+        b,
+        &format!("Velocidad de Windows ({})", system::POINTER_SPEED_DEFAULT),
+        btn,
+    );
+    add(
+        ID_SPEED_HELP,
+        Kind::Text(Secondary, true),
+        s,
+        "Vale para todos los ratones a la vez, también los que OpenPeripheral no puede configurar. No cambia el DPI del ratón: Windows multiplica su movimiento, así que algunos juegos no la usan. Es el mismo ajuste que Configuración › Mouse.",
         st,
     );
     add(ID_LOOK_TITLE, Kind::Text(Name, true), s, "Apariencia", st);
@@ -497,6 +548,32 @@ fn checked(id: i32) -> bool {
     ctl(id).is_some_and(|h| unsafe { SendMessageW(h, BM_GETCHECK, None, None).0 } == 1)
 }
 
+/// The Windows pointer speed row, read from Windows each time (it can
+/// also change in Configuración).
+/// The last change of the pointer speed failed (kept until the next one).
+static SPEED_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn refresh_speed() {
+    // The buttons stay enabled at the ends (1 and 20): disabling the
+    // focused one would lose the keyboard focus. There they do nothing.
+    let mut text = speed_text(system::pointer_speed());
+    if SPEED_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
+        text.push_str(". Error: no se pudo cambiar.");
+    }
+    set(ID_SPEED, &text);
+}
+
+/// "Velocidad del puntero de Windows: 12 de 20".
+pub fn speed_text(speed: Option<u32>) -> String {
+    match speed {
+        Some(s) => format!(
+            "Velocidad del puntero de Windows: {s} de {}",
+            system::POINTER_SPEED.end()
+        ),
+        None => "Velocidad del puntero de Windows: no se pudo leer".into(),
+    }
+}
+
 /// Fills the page from the shared state.
 pub(crate) fn refresh(view: HWND) {
     let Some(shared) = with_app(|a| a.view.shared.clone()) else {
@@ -504,6 +581,8 @@ pub(crate) fn refresh(view: HWND) {
     };
     let g = &shared.general;
     check(ID_STARTUP, system::autostart_enabled());
+    check(ID_PHOTOS, g.photos);
+    refresh_speed();
     for (i, (choice, _)) in THEMES.iter().enumerate() {
         check(ID_THEME0 + i as i32, g.theme == *choice);
     }
@@ -699,6 +778,25 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
     y += pad;
     section(ID_GEN_TITLE, &mut y, &mut put);
     choice(ID_STARTUP, ID_STARTUP_HELP, &mut y, &mut put);
+    choice(ID_PHOTOS, ID_PHOTOS_HELP, &mut y, &mut put);
+    // Windows pointer speed: value, its buttons (wrapped when narrow), help.
+    let sh = measure(ID_SPEED, Role::Strong, inner);
+    put(ID_SPEED, ix, y, inner, sh);
+    y += sh + px(8.0);
+    let (mut bx, mut by) = (ix, y);
+    for id in [ID_SPEED_SLOWER, ID_SPEED_FASTER, ID_SPEED_RESET] {
+        let bw = panel::button_width(&ctx, &get_text(h_of(id)));
+        if bx > ix && bx + bw > ix + inner {
+            bx = ix;
+            by += bh + px(8.0);
+        }
+        put(id, bx - ring, by - ring, bw + 2 * ring, bh + 2 * ring);
+        bx += bw + px(8.0);
+    }
+    y = by + bh + px(8.0);
+    let hh = measure(ID_SPEED_HELP, Role::Secondary, inner);
+    put(ID_SPEED_HELP, ix, y, inner, hh);
+    y += hh + px(14.0);
     card_end(top, &mut y, &mut cards);
 
     // Apariencia.
@@ -957,12 +1055,16 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
     let Some((palette, Some(fonts))) = with_app(|a| (a.view.palette, a.view.fonts.clone())) else {
         return;
     };
+    // Short visible labels of buttons whose accessible name is longer;
+    // any other button shows its own text.
     let label = match id {
-        ID_BACK => "‹  Dispositivos",
-        c if (ID_NEW_CFG0..ID_NEW_CFG0 + MAX_NEW).contains(&c) => "Configurar…",
-        n if (ID_NEW_NEVER0..ID_NEW_NEVER0 + MAX_NEW).contains(&n) => "No preguntar más",
-        ID_UNREG => "Quitar avisos de Windows",
-        _ => "Volver a preguntar",
+        ID_BACK => "‹  Dispositivos".to_string(),
+        c if (ID_NEW_CFG0..ID_NEW_CFG0 + MAX_NEW).contains(&c) => "Configurar…".into(),
+        n if (ID_NEW_NEVER0..ID_NEW_NEVER0 + MAX_NEW).contains(&n) => "No preguntar más".into(),
+        a if (ID_IGN_AGAIN0..ID_IGN_AGAIN0 + MAX_IGNORED).contains(&a) => {
+            "Volver a preguntar".into()
+        }
+        _ => get_text(dis.hwndItem),
     };
     let bg = if on_card {
         palette.surface_card
@@ -971,7 +1073,7 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
     };
     panel::draw_button(
         dis,
-        label,
+        &label,
         bg,
         &palette,
         &fonts,
@@ -1051,6 +1153,17 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32) -> bool {
                 SendMessageW(f, BM_CLICK, None, None);
             }
         },
+        (ID_SPEED_SLOWER | ID_SPEED_FASTER | ID_SPEED_RESET, BN_CLICKED) => {
+            let to = match (id, system::pointer_speed()) {
+                (ID_SPEED_RESET, _) => Some(system::POINTER_SPEED_DEFAULT),
+                (ID_SPEED_SLOWER, Some(s)) => Some(s.saturating_sub(1).max(1)),
+                (_, Some(s)) => Some((s + 1).min(*system::POINTER_SPEED.end())),
+                (_, None) => None,
+            };
+            let ok = to.is_some_and(|s| system::set_pointer_speed(s).is_ok());
+            SPEED_FAILED.store(!ok, std::sync::atomic::Ordering::Relaxed);
+            refresh_speed();
+        }
         (ID_STARTUP, BN_CLICKED) => {
             let _ = system::set_autostart(checked(ID_STARTUP));
             check(ID_STARTUP, system::autostart_enabled());
@@ -1060,14 +1173,16 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32) -> bool {
             // Applied when the worker publishes it (WM_APP_UPDATE).
             send_general(|g| g.theme = choice);
         }
-        (ID_AUTO | ID_ASK | ID_NOTIFY | ID_CONFLICT, BN_CLICKED) => {
+        (ID_AUTO | ID_ASK | ID_NOTIFY | ID_CONFLICT | ID_PHOTOS, BN_CLICKED) => {
             let (auto, ask) = (checked(ID_AUTO), checked(ID_ASK));
             let (notify, conflict) = (checked(ID_NOTIFY), checked(ID_CONFLICT));
+            let photos = checked(ID_PHOTOS);
             send_general(|g| {
                 g.auto_switch = auto;
                 g.ask_new = ask;
                 g.notifications = notify;
                 g.conflict_notice = conflict;
+                g.photos = photos;
             });
         }
         (c, BN_CLICKED) if (ID_NEW_CFG0..ID_NEW_CFG0 + MAX_NEW).contains(&c) => {

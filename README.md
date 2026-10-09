@@ -1,8 +1,8 @@
 # OpenPeripheral
 
-Control ligero de periféricos para Windows: batería, DPI, luz y botones del ratón, color de teclados y mandos, **sin cuentas, sin conexión a internet y sin telemetría**. Es una alternativa mínima a Razer Synapse, Logitech G HUB y similares para lo más habitual.
+Control ligero de periféricos para Windows: batería, DPI, luz y botones del ratón, color de teclados y mandos, **sin cuentas y sin telemetría**. Su única conexión a internet, opcional, descarga fotos de los ratones (ver «Seguridad y privacidad»). Es una alternativa mínima a Razer Synapse, Logitech G HUB y similares para lo más habitual.
 
-> *English:* lightweight, account-free peripheral control for Windows (battery, DPI, lighting, mouse buttons). No network access, no telemetry. Single ~0.5 MB native binary.
+> *English:* lightweight, account-free peripheral control for Windows (battery, DPI, lighting, mouse buttons). No telemetry; its only network access, optional, downloads mouse photos. Single ~0.9 MB native binary.
 
 ## Qué hace
 
@@ -23,11 +23,20 @@ Control ligero de periféricos para Windows: batería, DPI, luz y botones del ra
 
 ## Dispositivos verificados
 
-Solo se listan dispositivos probados en hardware real. Otros modelos pueden funcionar, pero no se abren hasta añadirlos a la lista blanca (ver [CONTRIBUTING.md](CONTRIBUTING.md)).
+Solo se listan dispositivos probados en hardware real. Además:
+
+- **Otros ratones Logitech HID++ 2.0** (por cable, con receptor o por Bluetooth; Bluetooth sin probar con un ratón real) se detectan automáticamente y se marcan «Detectado automáticamente». Ofrecen lo que declare el propio ratón (DPI, luz, batería y tasa de sondeo de lectura), siempre como ajuste volátil. Sus botones y su perfil integrado no se leen ni se escriben hasta verificar el modelo (ver [CONTRIBUTING.md](CONTRIBUTING.md)). Probado con un G203 LIGHTSYNC por cable (046D:C092): DPI leído, cambiado, releído y restaurado.
+- **Ratones Razer, SteelSeries y ASUS** (plan `Planes/2026-10-09-cualquier-raton.md`): se detectan automáticamente y solo se les cambia el DPI **sin guardarlo en el ratón**. Se pierde al desconectarlo; OpenPeripheral lo vuelve a aplicar al conectarlo si lo guardas en la app. **Ninguno se ha probado con un ratón real**: el comportamiento sale de hechos públicos de los protocolos y de un banco de ratones virtuales (`src/devices/sim.rs`, `src/devices/catalog.rs`).
+  - **Razer:** cualquier ratón que responda, solo con lecturas, a la versión de firmware y al DPI (identificadores de transacción `0x1F`, `0x3F` y `0xFF`). DPI de 100 a 16000 en pasos de 50, porque el protocolo no dice el rango del sensor.
+  - **SteelSeries:** 21 modelos con su orden de DPI conocida (Rival 3 y 5, Aerox 3, 5 y 9, Prime y variantes), con datos de rivalcfg. El ratón no informa de su DPI: la página muestra «—» hasta que OpenPeripheral fija uno.
+  - **ASUS ROG y TUF:** 24 modelos con datos de libratbag. Se cambia el DPI del perfil de DPI activo. Quedan fuera los modelos tras el receptor Omni y los de DPI X/Y separados.
+- **Para cualquier ratón:** «Ajustes» › «General» › «Velocidad del puntero de Windows». Vale para todos los ratones a la vez y no es DPI.
+- **Ratones, teclados y mandos de otras marcas** aparecen con «Detectado · sin ajustes». Solo se usan los datos que da Windows (nombre y tipo): nunca se abren ni se les envía nada.
 
 | Dispositivo | Conexión | Batería | DPI | Color | Notas |
 | --- | --- | --- | --- | --- | --- |
 | Logitech G305 Lightspeed | Receptor LIGHTSPEED (046D:C53F) | Sí | Sí | Luz (4 efectos) | DPI, luz y botones en la memoria del ratón; tasa de sondeo solo de lectura (ver abajo) |
+| Logitech G203 LIGHTSYNC | USB (046D:C092) | No (cable) | Sí | No (declara 0x8071, no implementado) | Botones y DPI en la memoria del ratón (perfil de formato 4; escritura y restauración de botones y DPI verificadas en hardware el 2026-10-09). Si G HUB u otro programa le desactivó la memoria (modo host), «Activar la memoria del ratón» la vuelve a activar tras confirmarlo |
 | Razer BlackWidow V3 Tenkeyless | USB (1532:0A24) | — | — | Estático | Synapse puede sobrescribir el color |
 | Sony DualSense | USB (054C:0CE6) | Sí | — | Lightbar | Bluetooth no admitido todavía |
 
@@ -66,7 +75,7 @@ La configuración se guarda en `%APPDATA%\OpenPeripheral\config.toml`. Identific
   - No hay límite de escrituras automáticas en la memoria del ratón: solo se escriben los botones cuando cambian, 5 s después de abrir el programa.
 - «Ajustes» solo tiene pantalla para ratones. En teclados y mandos aparece como «próximamente», y su color se cambia con `--apply`.
 - **Guardar en el ratón (DPI, luz y botones):**
-  - Solo en ratones con perfiles integrados de formato verificado (por ahora, el G305).
+  - Solo en ratones con perfiles integrados de formato verificado (por ahora, el G305 y el G203 LIGHTSYNC).
   - El DPI guardado ocupa los 4 niveles del botón DPI. Los niveles distintos se recuperan con «Restaurar perfil original…» o «Valores de fábrica…».
   - Doble clic, multimedia y «desactivar» no se ofrecen todavía: su formato no está comprobado. Los atajos con la tecla Windows (Win + D, Win + E…) se eligen en el grupo «Windows» de «Comandos»; en «Teclas» no se pueden escribir, porque Windows actúa al pulsar esa tecla.
   - El dibujo del ratón es esquemático y propio: el G305 tiene el suyo; los demás ratones usan una silueta genérica.
@@ -86,8 +95,13 @@ cargo clippy --all-targets -- -D warnings
 
 ## Seguridad y privacidad
 
-- La aplicación no tiene código de red ni dependencias de red, y no envía nada a ningún sitio.
-- Solo abre interfaces HID de una lista blanca y solo puede enviar comandos tipados y documentados. No hay forma de mandar bytes arbitrarios, y no existe código para firmware ni DFU.
+- **Única conexión a internet: fotos de los ratones**, desactivable en «Ajustes» › «Descargar fotos de los ratones» (activada por defecto).
+  - Pide por HTTPS a `img.openmouse.app` (el servidor de imágenes del proyecto OpenMouse, servido por Cloudflare) la foto de los modelos que la app conoce. Hoy son las del G305/G304 y el G203. El servidor ve tu IP y qué foto pides. No se envía nada más: ni cookies ni identificadores.
+  - Solo se pide una lista fija de archivos, nunca con el nombre del ratón. Una foto solo se usa si su huella SHA-256 coincide con la que lleva la app. Si no coincide, si no hay conexión o si falla algo, se ve el dibujo de la app.
+  - Las fotos se guardan en `%APPDATA%\OpenPeripheral\images\`. Se borran al desactivar la opción y cuando la app lleva 14 días sin ver un ratón de ese modelo.
+  - Las fotos son de sus fabricantes y sus derechos no están verificados. No están en este repositorio ni en las versiones publicadas.
+- Fuera de eso, la aplicación no envía nada a ningún sitio.
+- Solo abre interfaces HID de una lista blanca y la colección HID++ de los dispositivos Logitech (para detectar otros modelos), y solo puede enviar comandos tipados y documentados. A un modelo Logitech no verificado solo le envía consultas y ajustes volátiles (DPI y luz). Los dispositivos de otras marcas que no están en la lista no se abren. No hay forma de mandar bytes arbitrarios, y no existe código para firmware ni DFU.
 - La única escritura en la memoria de un dispositivo es el perfil integrado del ratón: DPI, luz y botones ([detalles](docs/protocolos/logitech-hidpp.md#perfiles-integrados-0x8100)):
   - va solo al sector del perfil de usuario activo, nunca al directorio ni a la copia de fábrica;
   - solo cambia los bytes del ciclo de DPI, del bloque de luz activo y de los botones editados, además del CRC;
@@ -99,4 +113,9 @@ cargo clippy --all-targets -- -D warnings
 
 Doble licencia, a tu elección: [MIT](LICENSE-MIT) o [Apache-2.0](LICENSE-APACHE).
 
-Los protocolos se han reimplementado a partir de documentación pública y de observación propia. No incluye código de proyectos GPL como OpenRazer u OpenRGB. Logitech, Razer, Sony y sus productos son marcas de sus respectivos propietarios; este proyecto no está afiliado a ellos.
+Los protocolos se han reimplementado a partir de documentación pública y de observación propia. No incluye código de proyectos GPL o AGPL como OpenRazer, OpenRGB u OpenMouse.
+
+Datos y código de terceros con licencias compatibles:
+
+- **libratbag** (MIT, © 2021 Kyoken y colaboradores de libratbag): la orden de DPI de los ratones ASUS (`src/protocol/asus.rs`, que conserva su aviso) y los datos de sus modelos (`src/protocol/asus_data.rs`).
+- **rivalcfg** (WTFPL v2, © Fabien Loison y colaboradores): los datos de DPI de los ratones SteelSeries (`src/protocol/steelseries_data.rs`). Logitech, Razer, Sony y sus productos son marcas de sus respectivos propietarios; este proyecto no está afiliado a ellos.

@@ -226,6 +226,7 @@ mod tests {
                 kind: Kind::Mouse,
                 connection: "Receptor",
                 wired: false,
+                support: crate::devices::Support::Verified,
             },
             status: Status::Ok(State::default()),
             last_battery: None,

@@ -6,6 +6,7 @@ mod backup;
 mod config;
 mod devices;
 mod games;
+mod photos;
 mod platform;
 mod profiles;
 mod protocol;
@@ -16,7 +17,7 @@ use platform::hid::{HidTransport, scan};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-OpenPeripheral: control ligero de periféricos, sin cuentas ni conexión a internet.
+OpenPeripheral: control ligero de periféricos, sin cuentas ni telemetría.
 
 Sin argumentos inicia el icono de la bandeja del sistema.
 
@@ -51,7 +52,7 @@ fn cli(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut devs = scan(&mut api);
+    let mut devs = scan(&mut api, &mut Default::default());
     match args.first().map(String::as_str) {
         Some("--list") => {
             if devs.is_empty() {

@@ -8,6 +8,8 @@
 >
 > **Revisión del 2026-10-08, aprobada (maqueta) — «Ajustes del ratón» v2 y pantalla «Ajustes»:** asignación de botones sobre un dibujo del ratón con el panel «Asignaciones», perfiles en pastillas, DPI en panel lateral, pestañas Botones y DPI · Iluminación · Avanzado y una pantalla «Ajustes» general (plan `Planes/2026-10-08-raton-v2-asignaciones-y-ajustes.md`, v2). Ver la sección «Revisión 2026-10-08». **Donde contradiga a las secciones anteriores, prevalece esta revisión.** Implementación: hecha (incrementos 0 a 7), con las desviaciones 17 a 19; puertas de hardware HW1 y HW2 pendientes.
 >
+> **Revisión del 2026-10-08 (2), aprobada por el usuario — fotos de ratones:** en «Botones y DPI», la foto del ratón descargada de img.openmouse.app sustituye al dibujo, directamente sobre el fondo y con los puntos encima. Si no hay foto, se usa el dibujo. Plan `Planes/2026-10-08-fotos-de-ratones.md` v1; ver la sección «Revisión 2026-10-08 (2): fotos de ratones». Donde contradiga a lo anterior, prevalece esta revisión.
+>
 > Este documento es la fuente de verdad de diseño de la interfaz de OpenPeripheral. Debe leerse antes de modificarla. **Sustituye** la dirección anterior («controles clásicos de Windows, sin identidad propia»), aprobada en el plan v0.1, que no admitía tema oscuro.
 
 ## Propósito y alcance
@@ -27,7 +29,7 @@
   - Atajos de teclado globales para cambiar de perfil, mostrar el perfil en la tarjeta de «Dispositivos», e importar o exportar perfiles.
   - Cambio automático de perfil con OpenPeripheral cerrado.
   - Navegación lateral.
-  - Imágenes de producto (fotos o renders del fabricante). **Revisión 2026-10-08:** se admite un **dibujo esquemático propio** del ratón, vectorial y sin logotipos, para asignar botones.
+  - Imágenes de producto (fotos o renders del fabricante). **Revisión 2026-10-08:** se admite un **dibujo esquemático propio** del ratón, vectorial y sin logotipos, para asignar botones. **Revisión 2026-10-08 (2):** «Botones y DPI» muestra la foto descargada de los modelos con puntos medidos sobre ella, como opción desactivable. Las fotos no se incluyen en la app ni en el repositorio.
   - Animaciones.
 - **Señal observable de éxito:** con la ventana abierta, en menos de 2 segundos se sabe qué dispositivo tiene poca batería y cuál no responde, sin depender del color.
 
@@ -41,7 +43,7 @@
 
 | Fuente | Tipo | Observado | Inferido | Decisión adoptada o descartada | Limitación |
 | --- | --- | --- | --- | --- | --- |
-| OpenMouse (captura del usuario) | Captura | Barra lateral de 7 secciones; tarjetas grandes con foto del ratón; nombre, Hz y batería como iconos; aviso flotante «Conectado a…» | Diseño centrado en pocos ratones; la foto da identidad | **Adoptado:** tarjetas con nombre y pocos metadatos. **Descartado:** foto de producto (sin derechos), barra lateral (hay una sola vista) y aviso flotante (el estado debe quedar visible) | Solo una captura estática |
+| OpenMouse (captura del usuario) | Captura | Barra lateral de 7 secciones; tarjetas grandes con foto del ratón; nombre, Hz y batería como iconos; aviso flotante «Conectado a…» | Diseño centrado en pocos ratones; la foto da identidad | **Adoptado:** tarjetas con nombre y pocos metadatos. **Descartado:** foto de producto (sin derechos; la revisión 2026-10-08 (2) la admite descargada, por decisión del usuario), barra lateral (hay una sola vista) y aviso flotante (el estado debe quedar visible) | Solo una captura estática |
 | OpenLogi (captura del usuario) | Captura | Lista de filas: nombre, chip de tipo, «● Conectado · Receptor · Canal», batería a la derecha, menú «…», contador «3 dispositivos», botón azul «Añadir dispositivo» | Los desconectados se muestran atenuados, no se ocultan | **Adoptado:** contador, línea de estado escrita, desconectados visibles y atenuados. **Descartado:** acento azul y selectores de vista | Solo una captura estática |
 
 ### Exploración visual
@@ -63,7 +65,7 @@ El enlace es solo una referencia. Este documento es la fuente de verdad.
 - **Personalidad y tono:** una herramienta discreta y precisa. Textos cortos en español, descriptivos, sin jerga.
 - **Densidad de información:** media. Una tarjeta por dispositivo con 5 bloques: tipo, identidad, energía, capacidades y acción.
 - **Principio de composición:** rejilla de tarjetas centrada con ancho máximo. El orden de lectura es de arriba abajo dentro de cada tarjeta.
-- **Dirección que se evita:** acentos de marca, gradientes, sombras, cristal o desenfoque, fotos de producto, avisos flotantes que desaparecen y métricas decorativas.
+- **Dirección que se evita:** acentos de marca, gradientes, sombras, cristal o desenfoque, fotos de producto (salvo la foto descargada de «Botones y DPI», revisión 2026-10-08 (2)), avisos flotantes que desaparecen y métricas decorativas.
 - **Riesgo visual deliberado y motivo:** colores semánticos en la pila (verde, ámbar, rojo) dentro de una interfaz monocroma. Lo pidió el usuario y hace que la batería baja salte a la vista. El color nunca va solo: lo acompañan el número de franjas, el porcentaje y el texto «Batería baja».
 
 ## Arquitectura e interacción
@@ -88,13 +90,13 @@ El enlace es solo una referencia. Este documento es la fuente de verdad.
 ### Tarjeta de dispositivo (orden fijo)
 
 1. Icono del tipo (32 px; 28 px en ventana estrecha) y el tipo en texto: «Ratón», «Teclado», «Mando».
-2. Nombre (máximo 2 líneas, luego «…» con el nombre completo accesible) y línea de estado: «Conectado · Receptor LIGHTSPEED», «Conectado · USB», «Sin respuesta · ¿apagado o en reposo?» o «Desconectado».
+2. Nombre (máximo 2 líneas, luego «…» con el nombre completo accesible) y línea de estado: «Conectado · Receptor LIGHTSPEED», «Conectado · USB», «Sin respuesta · ¿apagado o en reposo?» o «Desconectado». Un ratón Logitech detectado automáticamente añade «· Detectado automáticamente» (solo texto, sin insignia ni color). Un dispositivo sin controlador muestra «Detectado · sin ajustes» (revisión 2026-10-09).
 3. Energía, que puede ser:
    - **Pila de 5 franjas**, el porcentaje (22 px, seminegrita) y el estado de carga («descargando», «cargando», «carga completa»). Con 0–20 % añade «Batería baja» en seminegrita.
    - **Con cable:** icono de enchufe, «Con cable» y «sin batería».
    - **Sin dato:** se omite el bloque.
 4. Capacidades en texto: «1000 DPI · 1000 Hz», o «Color aplicado» con una muestra de 14 px y el valor hex. En teclados y mandos es siempre el **último color aplicado por la app**, porque el dispositivo no permite leer el suyo. En un ratón con luz se añade la luz guardada en su perfil: «1600 DPI · 1000 Hz · Luz fija ■ #00C8FF» («Luz apagada» o «Luz en ciclo de colores», sin muestra).
-5. Botón «Ajustes», alineado a la derecha, con nombre accesible «Ajustes de <dispositivo>».
+5. Botón «Ajustes», alineado a la derecha, con nombre accesible «Ajustes de <dispositivo>». Un dispositivo sin controlador no tiene botón: en su lugar se muestra «OpenPeripheral todavía no puede cambiar sus ajustes.» (en un ratón, seguido de «Puedes cambiar la velocidad del puntero de Windows en Ajustes › General.»), que también forma parte de su nombre accesible. Estas tarjetas van al final de la lista.
 
 ### Pila de batería
 
@@ -305,6 +307,13 @@ Decisiones del usuario: se pregunta **solo por juegos detectados**, la pregunta 
 - **Revisión 2026-10-07 (decisión del usuario):** «Restaurar perfil original…» y «Valores de fábrica…» pasan a la sección «Perfil del ratón» y restauran a la vez el **DPI al arrancar, la luz y los botones**. Textos de la confirmación de fábrica: «¿Volver a los valores de fábrica?» y «Se escribirán en el ratón el DPI, la luz y los botones de fábrica»; Cancelar / Restaurar valores de fábrica.
 - **Bloqueo por G HUB** (decisión del usuario): con G HUB en ejecución, «Guardar en el ratón…», «Restaurar perfil original…» y «Valores de fábrica…» se deshabilitan y aparece «Cierra G HUB para guardar los botones». El servicio `lghub_updater` no cuenta.
 - **Ratón no compatible**, o protocolo no verificado: borde discontinuo y «Este ratón todavía no permite cambiar sus botones desde OpenPeripheral». No se muestra ningún control que no funcione.
+- **Memoria del ratón desactivada** (modo host: la dejó así G HUB u otro programa de Logitech, aunque ya no esté abierto; prueba del 2026-10-09):
+  - Mismo estado, con el texto «La memoria del ratón está desactivada (la suele desactivar G HUB u otro programa de Logitech), así que sus botones guardados no funcionan ahora.».
+  - Debajo, el botón principal **«Activar la memoria del ratón»**. Pide confirmación («¿Activar la memoria del ratón?», con el botón «Activar») y luego vuelve a leer el perfil.
+  - El resultado aparece en el estado de la sección: «Memoria del ratón activada: ya puedes ver y cambiar sus botones.» o el error.
+  - Solo en modelos verificados. No escribe en la memoria del ratón.
+  - Mientras siga desactivada, «Guardar» el DPI lo guarda en la app, igual que en un ratón detectado automáticamente.
+- **Ratón detectado automáticamente** (revisión 2026-10-09): además, el aviso de la cabecera dice «Este ratón se ha detectado automáticamente; algunas funciones pueden no responder.». DPI y luz siguen disponibles si el ratón los declara.
 
 #### Tasa de sondeo y Restaurar
 
@@ -377,7 +386,7 @@ Decisiones del usuario y de la mesa redonda del 2026-10-08; la maqueta aprobada 
   - La fila asignada al botón elegido lleva fondo `surface.selected` y borde `text.primary`.
   - Pulsar una fila (o Intro) la asigna.
   - Grupos: Edición · Navegador y pestañas · Zoom · Ventanas · Windows (22 atajos con la tecla Windows; el usuario los probó en el G305 el 2026-10-08 y funcionan).
-  - Nota al pie: «Los atajos con la tecla Windows están en el grupo «Windows»; en «Teclas» no se pueden escribir».
+  - Sin nota al pie: se quitó la nota sobre la tecla Windows (decisión del usuario, 2026-10-08).
 - **Teclas:** el campo de captura de antes («Combinación de teclas», de solo lectura), su ayuda («Tab y Esc no se capturan…»), «Asignar» (con énfasis) y «Borrar».
 - **Ratón:** Clic izquierdo · Clic derecho · Clic central · Atrás · Adelante, con el mismo estilo de fila.
 - **Con un botón no editable elegido** (Izquierdo o DPI), el panel no ofrece acciones. Muestra, con borde discontinuo:
@@ -459,6 +468,25 @@ Decisiones del usuario y de la mesa redonda del 2026-10-08; la maqueta aprobada 
 - La lista de perfiles con «Usar», «Renombrar…», «Eliminar…» y el paginador. La sustituyen las pastillas y el menú.
 - Las secciones «Juegos y programas», «Tasa de sondeo» y «Restaurar» de la página.
 
+### Revisión 2026-10-08 (2): fotos de ratones
+
+Decisiones del usuario (2026-10-08), plan `Planes/2026-10-08-fotos-de-ratones.md` v1:
+
+- **Origen:** `img.openmouse.app`, el servidor de imágenes de OpenMouse. La app solo pide archivos de una tabla fija y solo usa una foto si su SHA-256 coincide con el de la tabla.
+- **Dónde se ve:** en «Botones y DPI», en lugar del dibujo y en la misma caja de 260 × 420 unidades. Se muestra un recorte de la foto con esas proporciones, así que la caja no cambia de tamaño al llegar la foto. Los puntos están medidos sobre la foto y se comprobaron superponiéndolos a ella. Hoy hay foto para el G305/G304 y el G203 (puntos medidos el 2026-10-09); los demás modelos siguen con su dibujo.
+- **Sin placa (decisión del usuario, 2026-10-08, tras verla):** la foto se dibuja directamente sobre el fondo de la página, sin placa ni borde, en los dos temas. Sustituye a la decisión 4 del plan (placa clara). En tema oscuro el ratón negro contrasta poco con el fondo; el usuario lo prefiere así. La foto no se recolorea.
+- **Puntos sobre la foto:** usan los colores del tema oscuro (círculo claro con borde oscuro), sea cual sea el tema. El anillo de elegido y el de foco llevan un halo oscuro de 1 px a cada lado, para verse tanto sobre el ratón negro como sobre el fondo claro. Los nombres accesibles no cambian.
+- **Cuándo no hay foto (se usa el dibujo):**
+  - la opción está desactivada;
+  - el tema es de alto contraste;
+  - la ventana es estrecha (lista);
+  - aún no se ha descargado;
+  - no hay conexión;
+  - cualquier fallo.
+  En ninguno de estos casos se avisa en la página: la foto sustituye al dibujo una sola vez, al llegar.
+- **«Ajustes» › «General»:** casilla «Descargar fotos de los ratones», activada por defecto, con la ayuda «Se conecta a img.openmouse.app (Cloudflare), un servidor externo, que ve tu IP y qué modelo pides; no se envía nada más. Si lo desactivas o falla, se usa el dibujo y se borran las fotos guardadas. Las fotos pertenecen a sus fabricantes.» Desactivarla borra las fotos guardadas.
+- **Caducidad:** una foto se borra al arrancar si la app lleva más de 14 días sin ver un ratón de ese modelo.
+
 ## Sistema visual
 
 ### Color y superficies
@@ -504,7 +532,7 @@ Decisiones del usuario y de la mesa redonda del 2026-10-08; la maqueta aprobada 
 
 - **Retícula, espaciado y anchuras:** contenido con ancho máximo de 1080 px, centrado y con márgenes de 32 px (16 px en estrecha). Rejilla `auto-fill` con columnas de 300 px como mínimo y separación de 16 px. Tarjeta con 20 px de relleno (16 px en estrecha), 16 px entre bloques y 280 px de alto mínimo en ancho intermedio o amplio.
 - **Radio, bordes y profundidad:** tarjetas con radio 10, botones con 6 y aviso con 8. Bordes de 1 px y sin sombras.
-- **Iconografía, imágenes o material visual:** solo los pictogramas propios descritos. Sin fotos ni logotipos de marcas.
+- **Iconografía, imágenes o material visual:** solo los pictogramas propios descritos. Sin fotos ni logotipos de marcas, salvo la foto descargada del ratón en «Botones y DPI» (revisión 2026-10-08 (2)), que puede llevar el logotipo del fabricante.
 
 ### Patrones Apple adaptados
 
@@ -753,6 +781,8 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 | 2026-10-08 | «Botones y DPI»: dibujo, puntos, etiquetas, «Asignaciones» y DPI | Ídem, con la copia original del perfil copiada al entorno aislado; 1440, 1116 y 436 px; temas oscuro y claro | Capturas; elegir «Lateral trasero» y asignar «Copiar» desde la lista: etiqueta «Cambiado · antes: Atajo Ctrl + V», «1 cambio sin guardar» y nada escrito en el ratón | Conforme: tres paneles (≥ 1290 px), DPI bajo el dibujo (1116 px), todo apilado con la lista de botones (436 px) | No se guardó en el ratón (puerta HW1 pendiente) |
 | 2026-10-08 | Recursos | Build de depuración, 20 ciclos de pestañas y de botón elegido; release con el recorrido completo | Contadores del proceso | GDI 41 → 41, USER 355 → 355, handles 191 → 192; release: memoria privada 2,8 MB, tamaño 862 KB | — |
 | 2026-10-08 | Teclado completo, Narrator, alto contraste y escala 150/200 % de la revisión | — | — | Bloqueado/no verificado | Necesita la ventana en primer plano y al usuario |
+| 2026-10-08 | Fotos de ratones (revisión 2026-10-08 (2)): descarga, placa, puntos y casilla | Build de depuración, `APPDATA` aislado, G305 real, 1460 y 700 px, temas oscuro y claro; árbol UIA y `PrintWindow` | Descarga real por HTTPS (447 275 bytes, sin `.tmp`); capturas con la foto en oscuro y claro; anillo de elegido y de foco sobre la foto; casilla desactivada (foto borrada, dibujo, `photos = false`) y reactivada (vuelve a descargarse sin reiniciar); barrido con fecha de 13 días (mismo archivo, fecha renovada) y de 15 días (borrado y descargado de nuevo; archivo ajeno intacto) | Conforme: foto sobre la placa y puntos sobre sus botones (la placa se retiró después, por decisión del usuario); en ventana estrecha, dibujo y lista sin foto; nombres accesibles de los puntos sin cambios | Alto contraste, escala 150 %, Narrator y cierre durante una descarga lenta: no verificados |
+| 2026-10-08 | Recursos con fotos | Ídem; 25 aperturas de la página alternando 1300 y 1460 px; release | Contadores del proceso; tamaño del ejecutable | GDI 38 → 38, USER 355 → 355; release 864 256 → 883 200 bytes (+18,9 KB) | — |
 | 2026-10-07 | Iluminación: mapa del perfil y luz en vivo | G305 real, 9 escrituras de prueba y 3 envíos en vivo, cada uno autorizado por el usuario | Relectura del sector tras cada escritura; observación del usuario al momento y tras apagar y encender | Conforme: ver `docs/protocolos/logitech-hidpp.md` | El ratón se dejó en la copia original (relectura idéntica byte a byte) |
 | 2026-10-07 | Guardado de la luz desde la página | G305 real; el usuario eligió fija y luego respiración lenta y guardó con el diálogo | Relectura del sector (solo cambia el bloque 0xDB y el CRC), configuración de la app actualizada | Conforme | — |
 | 2026-10-07 | Página con «Iluminación» | Build de depuración, 1180 px, oscuro | Árbol UIA y capturas | Conforme: estructura, nombres «…, elegido», «Guardado: …», estado de error del campo Hex (borde de 2 px, sin vista previa, «Probar la luz» deshabilitado), ratón en reposo con todo deshabilitado y cambios conservados, «Descartar» vuelve a lo guardado sin escribir | Desviaciones 6 y 7 |
@@ -770,7 +800,7 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 
 1. **Rol de la tarjeta (aprobada por el usuario en el plan):** UI Automation la expone como «panel» cuyo nombre es el resumen completo, no como «región» con campos navegables por separado.
 2. **Botón «Ajustes» como marcador (decisión del usuario, 2026-10-06):** en teclados y mandos se muestra, pero no hace nada hasta diseñar su pantalla, y su nombre accesible añade «, próximamente». En ratones abre «Ajustes del ratón». Las entradas por dispositivo del menú de la bandeja abren la vista.
-3. **Barra de desplazamiento:** cuando el contenido no cabe, aparece la barra nativa, que es clara también en tema oscuro, porque oscurecerla requiere API no documentadas, excluidas por el plan. La ventana se abre con el ancho del diseño (3 columnas), así que con 1 a 3 dispositivos no se ve. Seguimiento: decidir si se dibuja una barra propia.
+3. **Barra de desplazamiento:** cuando el contenido no cabe, aparece la barra nativa. En tema oscuro se le aplica el tema `DarkMode_Explorer` con `SetWindowTheme`, en la ventana y en las listas con barra (decisión del usuario, 2026-10-08: «haz que se vea oscuro»). La API es documentada, pero ese nombre de tema no; si Windows deja de reconocerlo, la barra vuelve a verse clara sin otros efectos. En tema claro y en alto contraste se usa la barra estándar.
 4. **Acciones del selector (plan `ajustes-raton`, 2026-10-07):** solo se ofrecen las acciones cuyo formato se ha observado en el ratón; ver «Botones». Doble clic, Multimedia y Desactivar quedan pendientes de evidencia.
 5. **Texto del diálogo de guardado:** el diseño decía «Antes se guardará una copia del perfil actual». La aplicación guarda una única copia original, que nunca se sobrescribe, y si la comprobación falla vuelve a escribir lo que había. El texto se ajustó para no prometer algo que no ocurre. Pendiente de confirmación del usuario.
 
@@ -804,3 +834,31 @@ No aplican: no hay gestos, capas ni transiciones espaciales.
 ## Regresión visual automatizada
 
 No aplica: el repositorio no usa Playwright, y la interfaz es nativa de Windows, no web.
+
+### Revisión 2026-10-09: velocidad del puntero de Windows (fase 1, plan `Planes/2026-10-09-cualquier-raton.md`)
+
+- **Por qué:** el usuario pide que la app sirva para cualquier ratón. No existe un estándar para el DPI y cada marca tiene su propio protocolo, así que lo único que vale para todos es la velocidad del puntero de Windows.
+- **Dónde:** en «Ajustes» › «General», debajo de las fotos:
+  - Texto en negrita «Velocidad del puntero de Windows: N de 20».
+  - Botones «Puntero más lento», «Puntero más rápido» y «Velocidad de Windows (10)», con nombres que se entienden solos con un lector de pantalla. En una ventana estrecha pasan a la línea siguiente.
+  - Ayuda: «Vale para todos los ratones a la vez… No cambia el DPI del ratón… Es el mismo ajuste que Configuración › Mouse.»
+- **Comportamiento:** el valor se lee de Windows cada vez que se refresca la página. Al pulsar, se aplica al momento y Windows lo guarda para el usuario (`SPIF_UPDATEINIFILE`). Si falla, al valor se le añade «Error: no se pudo cambiar.» hasta el siguiente intento.
+- **Accesibilidad:** los botones no se desactivan en los extremos (1 y 20), para no perder el foco del teclado; allí simplemente no cambian nada.
+- **Tarjetas «sin ajustes»:** si son de un ratón (no de un teclado ni de un mando), su texto añade «Puedes cambiar la velocidad del puntero de Windows en Ajustes › General.».
+
+### Revisión 2026-10-09: ratones de más de 8 botones (fase 2, plan `Planes/2026-10-09-cualquier-raton.md`)
+
+- «Botones y DPI» muestra hasta **16 botones**, que es lo que cabe en un perfil integrado de formatos 3 y 4.
+- Los botones con punto en el dibujo o en la foto salen como hasta ahora. Los que no tienen punto aparecen como filas de la lista debajo del dibujo, también en ventana ancha. En ventana estrecha siguen todos en la lista.
+- Del 7.º botón en adelante se llaman «Botón N».
+- Un perfil que declara más de 16 botones no se lee ni se escribe. Su disposición no se ha observado nunca y pisaría la copia G-shift (`0x60`). Aparece el estado «Este ratón todavía no permite cambiar sus botones…».
+
+### Revisión 2026-10-09: Logitech por Bluetooth, Razer, SteelSeries y ASUS (fases 3 y 4, plan `Planes/2026-10-09-cualquier-raton.md`)
+
+- Estos ratones usan la misma página de ajustes que un Logitech autodetectado:
+  - aviso «Detectado automáticamente»;
+  - solo la sección de DPI;
+  - «Guardar» lo guarda en OpenPeripheral, que lo vuelve a aplicar al conectar el ratón;
+  - «Botones» muestra el estado «Este ratón todavía no permite cambiar sus botones…».
+- **DPI desconocido:** si el ratón no informa de su DPI (SteelSeries), «Ahora» muestra «—» hasta que OpenPeripheral fija uno, y «Guardado» no muestra nada mientras no haya un valor guardado. Los botones de valores rápidos y el campo funcionan igual.
+- La tarjeta de un ratón Logitech por Bluetooth muestra la conexión «Bluetooth».

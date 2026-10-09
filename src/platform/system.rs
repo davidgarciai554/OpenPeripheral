@@ -17,6 +17,8 @@ const KNOWN: &[(&str, &str)] = &[
     ("lghub", "Logitech G HUB"),
     ("logioptionsplus", "Logi Options+"),
     ("razer", "Razer Synapse"),
+    ("steelseriesgg", "SteelSeries GG"),
+    ("armourycrate", "Armoury Crate"),
     ("openlogi", "OpenLogi"),
     ("steam.exe", "Steam (Steam Input)"),
     ("ds4windows", "DS4Windows"),
@@ -138,7 +140,60 @@ mod tests {
         assert_eq!(match_known("lghub_updater.exe"), None);
         assert_eq!(match_known("RazerAppEngine.exe"), Some("Razer Synapse"));
         assert_eq!(match_known("steam.exe"), Some("Steam (Steam Input)"));
+        assert_eq!(match_known("SteelSeriesGG.exe"), Some("SteelSeries GG"));
+        assert_eq!(match_known("ArmouryCrate.exe"), Some("Armoury Crate"));
         assert_eq!(match_known("steamwebhelper.exe"), None);
         assert_eq!(match_known("explorer.exe"), None);
+    }
+}
+
+/// Windows pointer speed (1–20; Windows' default is 10). It applies to
+/// every mouse at once and scales the pointer movement, not the sensor's
+/// DPI; games that read raw input do not use it.
+pub const POINTER_SPEED: std::ops::RangeInclusive<u32> = 1..=20;
+pub const POINTER_SPEED_DEFAULT: u32 = 10;
+
+pub fn pointer_speed() -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETMOUSESPEED, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    let mut speed = 0u32;
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETMOUSESPEED,
+            0,
+            Some(&mut speed as *mut u32 as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()?;
+    POINTER_SPEED.contains(&speed).then_some(speed)
+}
+
+/// Sets it as the Windows mouse settings do (saved for this user).
+pub fn set_pointer_speed(speed: u32) -> windows::core::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_SETMOUSESPEED, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SystemParametersInfoW,
+    };
+    let speed = speed.clamp(*POINTER_SPEED.start(), *POINTER_SPEED.end());
+    // The value goes in the pointer argument itself.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_SETMOUSESPEED,
+            0,
+            Some(speed as usize as *mut _),
+            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+        )
+    }
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    #[test]
+    fn the_pointer_speed_is_read_in_range() {
+        // Reading only: tests never change the user's Windows settings.
+        if let Some(s) = super::pointer_speed() {
+            assert!(super::POINTER_SPEED.contains(&s));
+        }
     }
 }

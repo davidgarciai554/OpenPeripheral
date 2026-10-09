@@ -44,6 +44,8 @@ pub enum Request {
     NameChunk {
         offset: u8,
     },
+    /// 0x0005 fn2 getDeviceType.
+    DeviceType,
     /// 0x1000 fn0.
     BatteryStatus,
     /// 0x1004 fn1.
@@ -86,6 +88,12 @@ pub enum Request {
     },
     /// 0x8100 fn0: memory layout (sector size, button count…).
     OnboardInfo,
+    /// 0x8100 fn2 getOnboardMode: 1 onboard profiles, 2 host. Read only.
+    GetOnboardMode,
+    /// 0x8100 fn1 setOnboardMode(1): back to the onboard profiles. Never
+    /// sets host mode. Verified on the G203 (2026-10-09): stays after
+    /// reconnecting; the profile memory is not touched.
+    ActivateOnboard,
     /// 0x8100 fn4: sector of the active profile.
     GetCurrentProfile,
     /// 0x8100 fn5: 16 bytes of a memory sector. Read only.
@@ -116,7 +124,7 @@ impl Request {
         use Request::*;
         match self {
             Ping { .. } | GetFeature { .. } => feature::ROOT,
-            NameLength | NameChunk { .. } => feature::DEVICE_NAME,
+            NameLength | NameChunk { .. } | DeviceType => feature::DEVICE_NAME,
             BatteryStatus => feature::BATTERY_STATUS,
             UnifiedBatteryStatus => feature::UNIFIED_BATTERY,
             DpiList { .. } | GetDpi { .. } | SetDpi { .. } => feature::ADJUSTABLE_DPI,
@@ -125,6 +133,8 @@ impl Request {
                 feature::COLOR_LED_EFFECTS
             }
             OnboardInfo
+            | GetOnboardMode
+            | ActivateOnboard
             | GetCurrentProfile
             | MemoryRead { .. }
             | MemoryWriteStart { .. }
@@ -145,6 +155,7 @@ impl Request {
             GetFeature { feature } => (0, p4([(feature >> 8) as u8, feature as u8, 0, 0])),
             NameLength => (0, p4([0; 4])),
             NameChunk { offset } => (1, p4([offset, 0, 0, 0])),
+            DeviceType => (2, p4([0; 4])),
             BatteryStatus => (0, p4([0; 4])),
             UnifiedBatteryStatus => (1, p4([0; 4])),
             DpiList { sensor } => (1, p4([sensor, 0, 0, 0])),
@@ -165,6 +176,8 @@ impl Request {
                 (3, p)
             }
             OnboardInfo => (0, p4([0; 4])),
+            GetOnboardMode => (2, p4([0; 4])),
+            ActivateOnboard => (1, p4([1, 0, 0, 0])),
             GetCurrentProfile => (4, p4([0; 4])),
             MemoryRead { sector, offset } => {
                 let ([s1, s0], [o1, o0]) = (sector.to_be_bytes(), offset.to_be_bytes());
@@ -219,6 +232,31 @@ pub enum Reply<'a> {
 pub enum Link {
     Up,
     Down,
+}
+
+/// 0x0005 fn2 reply: whether the device is a pointing device (mouse 3,
+/// trackpad 4 or trackball 5 in the public deviceType table).
+pub fn is_pointer(payload: &[u8]) -> Option<bool> {
+    payload.first().map(|t| matches!(t, 3..=5))
+}
+
+/// Longest device name kept, in characters.
+pub const NAME_MAX: usize = 64;
+
+/// Name reported by the device (0x0005), made safe to show and to use in a
+/// settings key: no control or bidirectional-override characters, trimmed,
+/// at most [`NAME_MAX`] characters.
+pub fn clean_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw)
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .take(NAME_MAX)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Receiver notification 0x41 (HID++ 1.0 short report): device `index`
@@ -363,6 +401,22 @@ pub fn parse_led_effect_id(p: &[u8]) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn device_type_and_name() {
+        assert_eq!(super::is_pointer(&[3]), Some(true));
+        assert_eq!(super::is_pointer(&[5, 0]), Some(true));
+        assert_eq!(super::is_pointer(&[0]), Some(false)); // keyboard
+        assert_eq!(super::is_pointer(&[8]), Some(false)); // headset
+        assert_eq!(super::is_pointer(&[]), None);
+        assert_eq!(super::clean_name(b"G203 LIGHTSYNC\0\0"), "G203 LIGHTSYNC");
+        assert_eq!(super::clean_name("a\u{202e}b\x07c\n".as_bytes()), "abc");
+        assert_eq!(
+            super::clean_name(&[b'x'; 200]).chars().count(),
+            super::NAME_MAX
+        );
+        assert_eq!(super::clean_name(b"\0\x01 "), "");
+    }
+
     use super::*;
 
     #[test]
@@ -479,8 +533,14 @@ mod tests {
         assert_eq!(&r[..8], &[0x11, 0x01, 0x07, 0x5b, 0x01, 0x01, 0x00, 0xef]);
         assert_eq!(Request::GetCurrentProfile.encode(1, 7)[3], 0x4b);
         // No request of this application targets 0x8100 write functions (6, 7, 8).
+        assert_eq!(Request::GetOnboardMode.encode(1, 7)[3], 0x2b);
+        assert_eq!(
+            &Request::ActivateOnboard.encode(0xff, 7)[..5],
+            &[0x11, 0xff, 7, 0x1b, 1]
+        );
         for req in [
             Request::OnboardInfo,
+            Request::GetOnboardMode,
             Request::GetCurrentProfile,
             Request::MemoryRead {
                 sector: 1,

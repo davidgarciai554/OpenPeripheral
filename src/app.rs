@@ -5,15 +5,17 @@
 //! [`POLL`] to refresh battery levels.
 
 use crate::config::{Config, parse_hex};
-use crate::devices::{Change, Device, DeviceInfo, DeviceKey, Error, ProfileDump, State, Transport};
+use crate::devices::{
+    Change, Device, DeviceInfo, DeviceKey, Error, ProfileDump, State, Support, Transport,
+};
 use crate::games::{self, Assoc, AutoApply, Program};
-use crate::platform::hid::{HidTransport, receivers, scan};
+use crate::platform::hid::{HidTransport, listed, receivers, scan};
 use crate::profiles::{self, MouseProfile, ProfileApply};
 use crate::protocol::Battery;
 use crate::protocol::hidpp::{Link, parse_connection};
 use crate::protocol::onboard::{self, Action, EditError, ProfileEdits, ProfileImage};
 use crate::protocol::razer::Rgb;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -61,6 +63,8 @@ pub enum Command {
     Restore(DeviceKey),
     /// Reads the onboard profile of a mouse (read only).
     ReadProfile(DeviceKey),
+    /// Puts a mouse in host mode back on its onboard profiles.
+    ActivateOnboard(DeviceKey, Confirmed),
     /// Saves DPI, light and button changes in the mouse's memory (one write).
     SaveProfile(DeviceKey, ProfileEdits, Confirmed),
     RestoreProfile(DeviceKey, Source, Confirmed),
@@ -91,6 +95,8 @@ pub enum Command {
     PageEdits(DeviceKey, bool),
     /// A receiver reported that one of its devices is back (HID++ 0x41).
     Reconnected(Slot),
+    /// A mouse photo was downloaded and saved (`photos`).
+    PhotoReady,
     Quit,
 }
 
@@ -104,6 +110,8 @@ pub struct Slot {
 
 /// Time the G305 needed after its connection notification to answer
 /// (observed: 1.57 s); the saved settings are sent after this.
+/// How often unlisted Logitech paths that answered nothing are probed again.
+const SKIP_RETRY: Duration = Duration::from_secs(300);
 const RECONNECT_SETTLE: Duration = Duration::from_millis(1500);
 /// Pause before the single retry of a failed re-apply.
 const RECONNECT_RETRY: Duration = Duration::from_secs(1);
@@ -180,6 +188,8 @@ pub enum Profile {
     NotRead,
     /// No onboard profiles, or a format this app has not verified.
     Unsupported,
+    /// Another program put the mouse in host mode: its profile is not in use.
+    HostMode,
     Failed(String),
     Read(ProfileView),
 }
@@ -235,6 +245,14 @@ pub struct Snapshot {
     pub unanswered: Vec<String>,
 }
 
+impl Snapshot {
+    /// "Guardar" keeps DPI and light in the app, not in the mouse: the
+    /// mouse is not verified, or its onboard profile is not in use.
+    pub fn saves_in_app(&self) -> bool {
+        self.info.support == Support::Auto || self.profile == Profile::HostMode
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub ok: bool,
@@ -265,6 +283,9 @@ pub struct Shared {
     pub auto_result: Option<Message>,
     /// «Ajustes» (app-wide), from the config.
     pub general: crate::config::General,
+    /// Incremented when the cached photos change (one downloaded, all
+    /// deleted), so the mouse page loads its photo again.
+    pub photos: u64,
 }
 
 struct Entry {
@@ -272,6 +293,10 @@ struct Entry {
     snapshot: Snapshot,
     /// DPI read the first time the device was seen, before re-applying.
     original_dpi: Option<u16>,
+    /// The first read happened: `original_dpi` is final. A mouse that
+    /// cannot report its DPI (SteelSeries) keeps `None`, never the one
+    /// this app set later.
+    original_read: bool,
     /// Last onboard-profile read (raw sectors stay inside the worker).
     profile: Option<std::result::Result<crate::devices::ProfileDump, Error>>,
     backup: Option<std::result::Result<String, String>>,
@@ -284,11 +309,12 @@ impl Entry {
         match &self.profile {
             None => Profile::NotRead,
             Some(Err(Error::Unsupported)) => Profile::Unsupported,
+            Some(Err(Error::HostMode)) => Profile::HostMode,
             Some(Err(e)) => Profile::Failed(e.to_string()),
             Some(Ok(d)) => match onboard::parse_buttons(&d.user, d.info.button_count) {
                 Some(buttons) => Profile::Read(ProfileView {
                     buttons,
-                    light: onboard::parse_light(&d.user),
+                    light: profile_light(d),
                     dpi_cycle: onboard::parse_dpi_cycle(&d.user),
                     effects: d.effects.clone(),
                 }),
@@ -328,9 +354,15 @@ fn write_checked(
     let Err(err) = dev.write_profile(t, &image) else {
         return Ok(());
     };
-    let undo = onboard::restore_image(&before.user, &before.user, before.sector, &before.directory)
-        .map_err(edit_error)
-        .and_then(|img| dev.write_profile(t, &img).map_err(|e| e.to_string()));
+    let undo = onboard::restore_image(
+        &before.user,
+        &before.user,
+        before.sector,
+        &before.directory,
+        &before.limits(),
+    )
+    .map_err(edit_error)
+    .and_then(|img| dev.write_profile(t, &img).map_err(|e| e.to_string()));
     Err(match undo {
         Ok(()) => format!("no se pudo guardar ({err}); el perfil se dejó como estaba."),
         Err(e2) => format!(
@@ -364,29 +396,39 @@ fn latest_use(rx: &Receiver<Command>, key: &DeviceKey, mut name: String) -> (Str
     (name, others)
 }
 
+/// Light stored in the profile, only where the app can edit it (the mouse
+/// declares effects): elsewhere its light block is neither shown nor written.
+fn profile_light(d: &ProfileDump) -> Option<onboard::Light> {
+    if d.effects.is_empty() {
+        None
+    } else {
+        onboard::parse_light(&d.user)
+    }
+}
+
+/// What has to change in the mouse (read as `d`) to hold the profile.
+fn edits_for(p: &MouseProfile, d: &ProfileDump) -> Option<ProfileEdits> {
+    let buttons = onboard::parse_buttons(&d.user, d.info.button_count)?;
+    let mut edits = p.edits(
+        &buttons,
+        profile_light(d),
+        onboard::parse_dpi_cycle(&d.user),
+    );
+    if d.effects.is_empty() {
+        edits.light = None;
+    }
+    Some(edits)
+}
+
 /// Whether the mouse (read as `d`) already holds the profile.
 fn holds(p: &MouseProfile, d: &ProfileDump) -> bool {
-    onboard::parse_buttons(&d.user, d.info.button_count).is_some_and(|b| {
-        p.matches(
-            &b,
-            onboard::parse_light(&d.user),
-            onboard::parse_dpi_cycle(&d.user),
-        )
-    })
+    edits_for(p, d).is_some_and(|e| e == ProfileEdits::default())
 }
 
 /// Hybrid switch: the mouse's memory is written only when the profile's
 /// buttons differ from the mouse's (DPI and light go live).
 fn buttons_differ(p: &MouseProfile, d: &ProfileDump) -> bool {
-    onboard::parse_buttons(&d.user, d.info.button_count).is_some_and(|b| {
-        !p.edits(
-            &b,
-            onboard::parse_light(&d.user),
-            onboard::parse_dpi_cycle(&d.user),
-        )
-        .buttons
-        .is_empty()
-    })
+    edits_for(p, d).is_some_and(|e| !e.buttons.is_empty())
 }
 
 /// Image that makes the mouse (read as `d`) hold the profile; the profile
@@ -395,14 +437,22 @@ fn profile_image(
     p: &MouseProfile,
     d: &ProfileDump,
 ) -> std::result::Result<ProfileImage, EditError> {
-    let buttons =
-        onboard::parse_buttons(&d.user, d.info.button_count).ok_or(EditError::BadProfile)?;
-    let edits = p.edits(
-        &buttons,
-        onboard::parse_light(&d.user),
-        onboard::parse_dpi_cycle(&d.user),
-    );
+    let edits = edits_for(p, d).ok_or(EditError::BadProfile)?;
     onboard::apply_edits(&d.user, d.sector, &d.directory, &d.limits(), &edits)
+}
+
+/// Keys are "vvvv:pppp/name": same USB device.
+fn same_vid_pid(a: &DeviceKey, b: &DeviceKey) -> bool {
+    a.0.split('/').next() == b.0.split('/').next()
+}
+
+/// "Perfil 1": the buttons the mouse holds, with the DPI and light the app
+/// already applies on connect (what the user has been using). Otherwise
+/// using "Perfil 1" later would drop them (`DeviceSettings::activate`).
+fn first_profile(mut read: MouseProfile, s: &crate::config::DeviceSettings) -> MouseProfile {
+    read.dpi = s.dpi.or(read.dpi);
+    read.light = s.light.clone().or(read.light);
+    read
 }
 
 /// Adds `profile` under `name` (checked); returns the name used.
@@ -449,6 +499,16 @@ pub struct Worker {
     tx: Sender<Command>,
     /// One listener per receiver path, alive while its flag is set.
     listeners: HashMap<CString, Arc<AtomicBool>>,
+    /// Unlisted Logitech paths that answered nothing; skipped by the periodic
+    /// rescan, retried on any device change, refresh, reconnection or every
+    /// `SKIP_RETRY` (a mouse asleep behind a receiver sends no notification).
+    skip: HashSet<CString>,
+    skip_since: std::time::Instant,
+    /// «Descargar fotos de los ratones», read by the download threads right
+    /// before they save, and the photos already handled this session (one
+    /// download attempt or one «seen» per photo and session).
+    photos_on: Arc<AtomicBool>,
+    photos_done: std::collections::HashSet<&'static str>,
 }
 
 impl Worker {
@@ -463,7 +523,6 @@ impl Worker {
         Self {
             api: hidapi::HidApi::new().ok(),
             entries: Vec::new(),
-            config,
             shared,
             notify,
             conflicts,
@@ -476,6 +535,11 @@ impl Worker {
             page_edits: Vec::new(),
             tx,
             listeners: HashMap::new(),
+            skip: HashSet::new(),
+            skip_since: std::time::Instant::now(),
+            photos_on: Arc::new(AtomicBool::new(config.general.photos)),
+            photos_done: Default::default(),
+            config,
         }
     }
 
@@ -484,6 +548,24 @@ impl Worker {
     fn start_listeners(&mut self) {
         let Some(api) = &self.api else { return };
         for (vid, pid, path) in receivers(api) {
+            // Only receivers worth listening to: a verified one, or one with
+            // a device found behind it (any Logitech HID++ collection is
+            // accepted, keyboards and headsets too). Limit: an unknown
+            // receiver whose mouse sleeps at start gets its listener once
+            // the mouse is found (periodic retry, `SKIP_RETRY`).
+            let verified = crate::devices::SUPPORTED
+                .iter()
+                .any(|s| (s.vid, s.pid) == (vid, pid) && !s.wired);
+            let prefix = format!("{vid:04x}:{pid:04x}/");
+            let behind = self.entries.iter().any(|e| {
+                e.snapshot.info.key.0.starts_with(&prefix)
+                    && e.device
+                        .as_ref()
+                        .is_some_and(|d| d.receiver_index().is_some())
+            });
+            if !verified && !behind {
+                continue;
+            }
             if self
                 .listeners
                 .get(&path)
@@ -516,8 +598,14 @@ impl Worker {
     /// Sends the saved DPI and light again to a device that came back,
     /// retrying once; a second failure is left for the next rescan.
     fn reconnected(&mut self, slot: Slot) {
+        let found = targets(&self.entries, slot);
+        if found.is_empty() {
+            // A device not seen before: find it now, not at the next poll.
+            self.skip.clear();
+            return self.rescan(None);
+        }
         let mut failures = Vec::new();
-        for i in targets(&self.entries, slot) {
+        for i in found {
             self.read(i);
             let mut result = self.reapply(i);
             if result.is_err() {
@@ -543,6 +631,12 @@ impl Worker {
                 self.dropped
             ),
         });
+        if let Some(dir) = crate::photos::dir() {
+            crate::photos::sweep(&dir, std::time::SystemTime::now(), crate::photos::MAX_AGE);
+            if !self.config.general.photos {
+                crate::photos::delete_all(&dir);
+            }
+        }
         self.rescan(dropped);
         self.libraries = crate::platform::libraries::load();
         // Commands that arrived while coalescing.
@@ -570,15 +664,25 @@ impl Worker {
                 Ok(Command::Rescan) => {
                     sleep(SETTLE);
                     queue.extend(skip_rescans(&rx));
+                    self.skip.clear();
                     self.rescan(None);
                 }
                 // A full rescan also finds wireless devices that were switched
                 // on behind an already present receiver (no OS notification).
-                Err(RecvTimeoutError::Timeout) => self.rescan(None),
-                Ok(Command::Refresh) => self.rescan(Some(Message {
-                    ok: true,
-                    text: "Lista de dispositivos actualizada.".into(),
-                })),
+                Err(RecvTimeoutError::Timeout) => {
+                    if self.skip_since.elapsed() >= SKIP_RETRY {
+                        self.skip.clear();
+                        self.skip_since = std::time::Instant::now();
+                    }
+                    self.rescan(None)
+                }
+                Ok(Command::Refresh) => {
+                    self.skip.clear();
+                    self.rescan(Some(Message {
+                        ok: true,
+                        text: "Lista de dispositivos actualizada.".into(),
+                    }))
+                }
                 Ok(Command::Try(key, change)) => {
                     if let Some(i) = self.index(&key) {
                         self.try_change(i, change)
@@ -594,6 +698,11 @@ impl Worker {
                         self.read_profile(i)
                     }
                 }
+                Ok(Command::ActivateOnboard(key, Confirmed(()))) => {
+                    if let Some(i) = self.index(&key) {
+                        self.activate_onboard(i)
+                    }
+                }
                 Ok(Command::SaveProfile(key, edits, Confirmed(()))) => {
                     if let Some(i) = self.index(&key) {
                         // What was saved in the mouse is also what the app
@@ -604,6 +713,25 @@ impl Worker {
                             .into_iter()
                             .chain(edits.light.map(Change::Light))
                             .collect();
+                        let e = &self.entries[i];
+                        if e.snapshot.info.support == Support::Auto
+                            || matches!(e.profile, Some(Err(Error::HostMode)))
+                        {
+                            // Buttons only exist in the mouse's memory: they
+                            // are never dropped silently.
+                            if !edits.buttons.is_empty() {
+                                let name = e.snapshot.info.name.clone();
+                                self.finish_write(Message {
+                                    ok: false,
+                                    text: format!(
+                                        "{name}: no se guardó nada; sus botones no se pueden cambiar ahora."
+                                    ),
+                                });
+                                continue;
+                            }
+                            self.save_in_app(i, saved);
+                            continue;
+                        }
                         self.write_profile(
                             i,
                             "Guardado en el ratón.",
@@ -634,7 +762,13 @@ impl Worker {
                                 if saved.sector != d.sector || saved.info != d.info {
                                     return Err(EditError::BadProfile);
                                 }
-                                onboard::restore_image(&saved.user, &d.user, d.sector, &d.directory)
+                                onboard::restore_image(
+                                    &saved.user,
+                                    &d.user,
+                                    d.sector,
+                                    &d.directory,
+                                    &d.limits(),
+                                )
                             }),
                             Source::Factory => ("Valores de fábrica restaurados.", |d, _| {
                                 onboard::factory_image(
@@ -771,12 +905,27 @@ impl Worker {
                 }
                 Ok(Command::SetGeneral(g)) => {
                     let auto = g.auto_switch;
+                    let photos = g.photos;
                     self.config.set_game_options(g.auto_switch, g.ask_new);
                     self.config.general = g;
                     if !auto {
                         self.pending.clear();
                     }
                     self.save_config();
+                    if photos != self.photos_on.swap(photos, Ordering::Relaxed) {
+                        self.photos_done.clear();
+                        if !photos {
+                            if let Some(dir) = crate::photos::dir() {
+                                crate::photos::delete_all(&dir);
+                            }
+                            self.photos_changed();
+                        }
+                        self.check_photos();
+                    }
+                    self.publish(None);
+                }
+                Ok(Command::PhotoReady) => {
+                    self.photos_changed();
                     self.publish(None);
                 }
                 Ok(Command::PageEdits(key, on)) => {
@@ -798,7 +947,12 @@ impl Worker {
     /// What the mouse holds (last read), as a profile named `name`.
     fn mouse_profile(&self, i: usize, name: &str) -> Option<MouseProfile> {
         match &self.entries[i].profile {
-            Some(Ok(d)) => MouseProfile::from_sector(name, &d.user, d.info.button_count),
+            Some(Ok(d)) => Some(MouseProfile::from_profile(
+                name,
+                &onboard::parse_buttons(&d.user, d.info.button_count)?,
+                profile_light(d),
+                onboard::parse_dpi_cycle(&d.user),
+            )),
             _ => None,
         }
     }
@@ -819,18 +973,17 @@ impl Worker {
     }
 
     /// First successful read of a mouse without profiles: what it holds
-    /// becomes "Perfil 1", so it matches the mouse from the start. The DPI
-    /// and light the app already applies on connect stay as they are until
-    /// another profile is used. Nothing is written to the mouse.
+    /// becomes "Perfil 1" (`first_profile`). Nothing is written to the mouse.
     fn migrate(&mut self, i: usize) {
         let key = self.entries[i].snapshot.info.key.clone();
         if self.has_profiles(&key) {
             return;
         }
-        let Some(p) = self.mouse_profile(i, profiles::FIRST_NAME) else {
+        let Some(read) = self.mouse_profile(i, profiles::FIRST_NAME) else {
             return;
         };
         let s = self.config.settings_mut(&key);
+        let p = first_profile(read, s);
         s.profiles.push(p);
         s.active = Some(profiles::FIRST_NAME.into());
         self.save_config();
@@ -1229,8 +1382,9 @@ impl Worker {
                 if state.battery.is_some() {
                     e.snapshot.last_battery = state.battery;
                 }
-                if e.original_dpi.is_none() {
-                    e.original_dpi = state.dpi.as_ref().map(|d| d.current);
+                if !e.original_read {
+                    e.original_read = true;
+                    e.original_dpi = state.dpi.as_ref().and_then(|d| d.current);
                 }
                 Status::Ok(state)
             }
@@ -1247,23 +1401,60 @@ impl Worker {
             return;
         };
         // Limit: two identical models share a key, so only one is listed.
-        let mut found: HashMap<DeviceKey, Box<dyn Device>> = scan(api)
+        let mut found: HashMap<DeviceKey, Box<dyn Device>> = scan(api, &mut self.skip)
             .into_iter()
             .map(|d| (d.info().key.clone(), d))
             .collect();
+        // Devices no driver handles: shown, never opened. One a driver found
+        // (a Razer mouse is also listed until its probe answers) is not.
+        // Nor one whose entry has a driver (asleep now: it is disconnected,
+        // not a device without settings).
+        let mut seen: HashMap<DeviceKey, DeviceInfo> = listed(api)
+            .into_iter()
+            .filter(|i| !found.keys().any(|k| same_vid_pid(k, &i.key)))
+            .filter(|i| {
+                !self.entries.iter().any(|e| {
+                    e.snapshot.info.support != Support::Listed
+                        && same_vid_pid(&e.snapshot.info.key, &i.key)
+                })
+            })
+            .map(|i| (i.key.clone(), i))
+            .collect();
         for e in &mut self.entries {
             e.device = found.remove(&e.snapshot.info.key);
-            if e.device.is_none() {
+            // A device listed before (its probe failed) that a driver found
+            // now takes the driver's info: settings, vendor, connection.
+            if let Some(d) = &e.device {
+                if e.snapshot.info.support != d.info().support {
+                    e.snapshot.info = d.info().clone();
+                }
+            }
+            if seen.remove(&e.snapshot.info.key).is_some() {
+                e.snapshot.status = Status::Ok(State::default());
+            } else if e.device.is_none() {
                 e.snapshot.status = Status::Disconnected;
             }
         }
-        for (_, d) in found {
-            let info = d.info().clone();
+        // A device without settings that left has nothing to keep.
+        self.entries.retain(|e| {
+            e.snapshot.info.support != Support::Listed
+                || !matches!(e.snapshot.status, Status::Disconnected)
+        });
+        let new = found
+            .into_values()
+            .map(|d| (d.info().clone(), Some(d)))
+            .chain(seen.into_values().map(|i| (i, None)));
+        for (info, device) in new {
+            let status = if device.is_some() {
+                Status::Searching
+            } else {
+                Status::Ok(State::default())
+            };
             self.entries.push(Entry {
-                device: Some(d),
+                device,
                 snapshot: Snapshot {
                     info,
-                    status: Status::Searching,
+                    status,
                     last_battery: None,
                     saved: false,
                     saved_dpi: None,
@@ -1280,14 +1471,16 @@ impl Worker {
                     unanswered: Vec::new(),
                 },
                 original_dpi: None,
+                original_read: false,
                 profile: None,
                 backup: None,
                 reapply_due: false,
             });
         }
-        self.entries.sort_by(|a, b| {
-            (a.snapshot.info.vendor, &a.snapshot.info.name)
-                .cmp(&(b.snapshot.info.vendor, &b.snapshot.info.name))
+        // Devices without settings go last.
+        self.entries.sort_by_key(|e| {
+            let i = &e.snapshot.info;
+            (i.support == Support::Listed, i.vendor, i.name.clone())
         });
         let mut failures = Vec::new();
         for i in 0..self.entries.len() {
@@ -1308,6 +1501,7 @@ impl Worker {
             }
         }
         self.start_listeners();
+        self.check_photos();
         let message = if failures.is_empty() {
             done
         } else {
@@ -1319,7 +1513,79 @@ impl Worker {
         self.publish(message);
     }
 
-    /// Re-applies saved settings; the error text names the device.
+    /// For each model with a photo seen for the first time this session:
+    /// marks a cached photo as seen, or downloads it in a thread of its own
+    /// (the app never waits for it, not even to quit).
+    fn check_photos(&mut self) {
+        let Some(dir) = crate::photos::dir() else {
+            return;
+        };
+        if !self.config.general.photos {
+            return;
+        }
+        for e in self.entries.iter().filter(|e| e.device.is_some()) {
+            let Some(photo) = crate::photos::photo_for(&e.snapshot.info.name) else {
+                continue;
+            };
+            if !self.photos_done.insert(photo.file) {
+                continue;
+            }
+            if crate::photos::load(&dir, photo).is_some() {
+                crate::photos::touch(&dir, photo);
+                continue;
+            }
+            let (tx, on, dir) = (self.tx.clone(), self.photos_on.clone(), dir.clone());
+            let _ = std::thread::Builder::new()
+                .name("photo".into())
+                .spawn(move || {
+                    let keep = || on.load(Ordering::Relaxed);
+                    let endpoint = crate::photos::Endpoint::openmouse();
+                    if crate::photos::download(&endpoint, photo, &dir, &keep).is_ok() {
+                        let _ = tx.send(Command::PhotoReady);
+                    }
+                });
+        }
+    }
+
+    fn photos_changed(&self) {
+        let mut s = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        s.photos += 1;
+    }
+
+    /// «Activar la memoria del ratón»: back to the onboard profiles, then
+    /// the profile is read again. Succeeds only if it can be read.
+    fn activate_onboard(&mut self, i: usize) {
+        let name = self.entries[i].snapshot.info.name.clone();
+        let result = match (&self.api, self.entries[i].device.as_mut()) {
+            (Some(api), Some(dev)) => {
+                HidTransport::open(api, dev.path()).and_then(|t| dev.activate_onboard(&t))
+            }
+            _ => Err(Error::Timeout),
+        };
+        self.read_profile(i);
+        let message = match (result, &self.entries[i].profile) {
+            (Ok(()), Some(Ok(_))) => Message {
+                ok: true,
+                text: format!("{name}: memoria del ratón activada."),
+            },
+            (Ok(()), Some(Err(e))) => Message {
+                ok: false,
+                text: format!("{name}: se activó, pero no se pudo leer el perfil ({e})."),
+            },
+            (Ok(()), None) => Message {
+                ok: false,
+                text: format!("{name}: se activó, pero no se pudo leer el perfil."),
+            },
+            (Err(e), _) => Message {
+                ok: false,
+                text: format!("{name}: {e}."),
+            },
+        };
+        self.finish_write(message);
+    }
+
+    /// Reads the onboard profile (read only); the first time it also takes
+    /// the original copy, then publishes the result.
     fn read_profile(&mut self, i: usize) {
         let Some(api) = &self.api else { return };
         let e = &mut self.entries[i];
@@ -1396,6 +1662,37 @@ impl Worker {
                 text: format!("No se pudo guardar la configuración de la app ({err})."),
             }));
         }
+    }
+
+    /// "Guardar" on a mouse found by automatic detection: its onboard profile
+    /// is never written, so the changes are applied now and recorded in the
+    /// app, which re-applies them whenever the mouse connects.
+    fn save_in_app(&mut self, i: usize, changes: Vec<Change>) {
+        let name = self.entries[i].snapshot.info.name.clone();
+        let key = self.entries[i].snapshot.info.key.clone();
+        let result = match (&self.api, self.entries[i].device.as_mut()) {
+            (Some(api), Some(dev)) => HidTransport::open(api, dev.path())
+                .and_then(|t| changes.iter().try_for_each(|c| dev.apply(&t, *c))),
+            _ => Err(Error::Timeout),
+        };
+        self.read(i);
+        let message = match result {
+            Ok(()) => {
+                changes
+                    .into_iter()
+                    .for_each(|c| self.config.record(&key, c));
+                self.save_config();
+                Message {
+                    ok: true,
+                    text: format!("{name}: guardado en OpenPeripheral; se aplicará al conectarlo."),
+                }
+            }
+            Err(err) => Message {
+                ok: false,
+                text: format!("{name}: no se pudo guardar ({err})."),
+            },
+        };
+        self.finish_write(message);
     }
 
     /// "Probar": sends the change, records nothing.
@@ -1501,7 +1798,7 @@ impl Worker {
         }
         // The profile's own light, if the app had replaced it.
         let profile_light = match &e.profile {
-            Some(Ok(d)) if !d.effects.is_empty() => onboard::parse_light(&d.user),
+            Some(Ok(d)) => profile_light(d),
             _ => None,
         };
         if let (Some(light), Some(dev)) = (profile_light, e.device.as_mut()) {
@@ -1575,6 +1872,67 @@ mod tests {
             self.dump.user = image.bytes().to_vec();
             Ok(())
         }
+    }
+
+    #[test]
+    fn same_usb_device_ignores_the_name() {
+        let k = |s: &str| DeviceKey(s.into());
+        assert!(same_vid_pid(
+            &k("1532:00b9/Razer Basilisk"),
+            &k("1532:00b9/Ratón Razer")
+        ));
+        assert!(!same_vid_pid(&k("1532:00b9/A"), &k("1532:0099/A")));
+    }
+
+    #[test]
+    fn the_first_profile_keeps_the_dpi_and_light_the_app_applies() {
+        let m = mouse(0);
+        let buttons = onboard::parse_buttons(&m.dump.user, 6).unwrap();
+        let read = MouseProfile::from_profile(
+            profiles::FIRST_NAME,
+            &buttons,
+            None,
+            Some([800, 850, 1600, 3200]),
+        );
+        assert_eq!(read.dpi, None, "a cycle is not a start DPI");
+        let mut s = crate::config::DeviceSettings {
+            dpi: Some(950),
+            light: Some("apagada".into()),
+            ..Default::default()
+        };
+        let mut p = first_profile(read.clone(), &s);
+        assert_eq!((p.dpi, p.light.as_deref()), (Some(950), Some("apagada")));
+        assert_eq!(p.buttons, read.buttons);
+        // Using it later keeps them.
+        p.name = profiles::FIRST_NAME.into();
+        s.profiles.push(p);
+        assert!(s.activate(profiles::FIRST_NAME));
+        assert_eq!(s.dpi, Some(950));
+        // Nothing saved in the app: what the mouse holds.
+        let p = first_profile(read.clone(), &crate::config::DeviceSettings::default());
+        assert_eq!(p, read);
+    }
+
+    #[test]
+    fn a_mouse_without_profile_light_ignores_the_profiles_light() {
+        let mut m = mouse(0);
+        m.dump.effects.clear();
+        let d = &m.dump;
+        let red = Some(onboard::Light::Fixed(crate::protocol::razer::Rgb {
+            r: 255,
+            g: 0,
+            b: 0,
+        }));
+        let buttons = onboard::parse_buttons(&d.user, 6).unwrap();
+        let p =
+            MouseProfile::from_profile("Trabajo", &buttons, red, onboard::parse_dpi_cycle(&d.user));
+        // Same buttons and DPI: already held, and an image never carries light.
+        assert!(holds(&p, d));
+        let img = profile_image(&p, d).unwrap();
+        assert_eq!(img.bytes(), d.user.as_slice());
+        // With light effects the same profile asks for its light.
+        m.dump.effects = onboard::samples::EFFECTS.to_vec();
+        assert!(!holds(&p, &m.dump));
     }
 
     fn mouse(fail: usize) -> MemMouse {
@@ -1674,6 +2032,7 @@ mod tests {
             },
             device: Some(Box::new(m)),
             original_dpi: None,
+            original_read: false,
             profile: None,
             backup: None,
             reapply_due: false,
@@ -1715,7 +2074,7 @@ mod tests {
             Action::Mouse(0x08)
         );
         write_checked(&mut m, &t, &saved, |d, s| {
-            onboard::restore_image(&s.user, &d.user, d.sector, &d.directory)
+            onboard::restore_image(&s.user, &d.user, d.sector, &d.directory, &d.limits())
         })
         .unwrap();
         assert_eq!(m.dump.user, saved.user);
