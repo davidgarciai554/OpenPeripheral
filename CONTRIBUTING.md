@@ -10,7 +10,7 @@ Gracias por ayudar. El objetivo es seguir siendo **pequeño, local y seguro**: s
 ## Añadir un dispositivo
 
 1. **Solo comandos documentados o verificados.** Cada constante nueva debe tener su procedencia en `docs/protocolos/<marca>.md`: especificación pública, documentación de terceros o captura propia. Se puede portar código con licencia compatible con la AGPL-3.0-or-later del proyecto (MIT, BSD, Apache-2.0, GPL-2.0-or-later, GPL-3.0 o AGPL-3.0, como OpenMouse) si se cumplen estas condiciones:
-   - **(a) Procedencia comprobada en cada módulo.** Se excluye lo que derive de software del fabricante (por ejemplo, el Ninjutso de OpenMouse, sacado del panel web de NinjaForce) y lo que tenga un origen dudoso.
+   - **(a) Procedencia anotada en cada módulo.** Desde el 2026-10-13, por decisión del mantenedor, se admite también lo que OpenMouse derivó del software del fabricante (AJAZZ, ATK, Dareu, Finalmouse, Incott, Keychron, Ninjutso, VAXEE…). Ese código no es de OpenMouse y su licencia puede no cubrirlo, así que se marca como «derivado de software de fabricante, procedencia no verificada», se mantiene en un bloque por marca y se retira si su titular lo pide (abre un issue). Hoy solo se usan nombres e identificadores (`src/devices/listed_data.rs`, ver `docs/protocolos/modelos-listados.md`).
    - **(b) Cita en `docs/protocolos/<marca>.md`:** repositorio, commit y licencia.
    - **(c) Cabecera en el `.rs` portado** con el origen, el copyright y la licencia.
    - **(d) Cumplir las reglas 2 a 7**, aunque el original haga otra cosa. Por ejemplo, se quitan sus escrituras persistentes.

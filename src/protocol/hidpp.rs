@@ -20,7 +20,7 @@ pub mod feature {
     pub const BATTERY_STATUS: u16 = 0x1000;
     pub const UNIFIED_BATTERY: u16 = 0x1004;
     pub const ADJUSTABLE_DPI: u16 = 0x2201;
-    // Read only: changing it needs host mode (0x8100), excluded from v0.1.
+    // Written only where no host-mode switch is needed (see `SetReportRate`).
     pub const REPORT_RATE: u16 = 0x8060;
     pub const ONBOARD_PROFILES: u16 = 0x8100;
     pub const COLOR_LED_EFFECTS: u16 = 0x8070;
@@ -67,6 +67,13 @@ pub enum Request {
     ReportRateList,
     /// 0x8060 fn1.
     GetReportRate,
+    /// 0x8060 fn2 setReportRate, interval in ms. Volatile: the onboard
+    /// profile keeps its own rate. Sent only to a wired mouse or one
+    /// already in host mode: this app never switches to host mode (0x8100
+    /// setOnboardMode(2) is persistent). OpenMouse `setLegacyReportRate`.
+    SetReportRate {
+        ms: u8,
+    },
     /// 0x8070 fn0: number of light zones. Read only.
     LedInfo,
     /// 0x8070 fn1: zone location and number of effects. Read only.
@@ -128,7 +135,7 @@ impl Request {
             BatteryStatus => feature::BATTERY_STATUS,
             UnifiedBatteryStatus => feature::UNIFIED_BATTERY,
             DpiList { .. } | GetDpi { .. } | SetDpi { .. } => feature::ADJUSTABLE_DPI,
-            ReportRateList | GetReportRate => feature::REPORT_RATE,
+            ReportRateList | GetReportRate | SetReportRate { .. } => feature::REPORT_RATE,
             LedInfo | LedZoneInfo { .. } | LedEffectInfo { .. } | SetLight { .. } => {
                 feature::COLOR_LED_EFFECTS
             }
@@ -163,6 +170,7 @@ impl Request {
             SetDpi { sensor, dpi } => (3, p4([sensor, (dpi >> 8) as u8, dpi as u8, 0])),
             ReportRateList => (0, p4([0; 4])),
             GetReportRate => (1, p4([0; 4])),
+            SetReportRate { ms } => (2, p4([ms, 0, 0, 0])),
             LedInfo => (0, p4([0; 4])),
             LedZoneInfo { zone } => (1, p4([zone, 0, 0, 0])),
             LedEffectInfo { zone, index } => (2, p4([zone, index, 0, 0])),
@@ -661,5 +669,7 @@ mod tests {
         assert_eq!(parse_report_rate_list(&[0]), None);
         assert_eq!(parse_report_rate(&[1]), Some(1));
         assert_eq!(parse_report_rate(&[0]), None);
+        let set = Request::SetReportRate { ms: 2 }.encode(0xff, 6);
+        assert_eq!((set[2], set[3] >> 4, set[4]), (6, 2, 2));
     }
 }

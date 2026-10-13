@@ -25,6 +25,9 @@ pub struct DeviceSettings {
     /// "respiracion #RRGGBB <ms>".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light: Option<String>,
+    /// Report interval in ms; reapplied to verified mice only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_rate: Option<u8>,
     /// Named mouse profiles (`profiles.rs`). With profiles, `dpi` and
     /// `light` mirror the active one, so an older version of the app still
     /// applies the right DPI and light.
@@ -57,6 +60,7 @@ impl Default for DeviceSettings {
             dpi: None,
             color: None,
             light: None,
+            report_rate: None,
             profiles: Vec::new(),
             active: None,
             programs: Vec::new(),
@@ -79,6 +83,9 @@ impl DeviceSettings {
         if let Some(l) = self.light.as_deref().and_then(parse_light) {
             out.push(Change::Light(l));
         }
+        if let Some(ms) = self.report_rate.filter(|ms| (1..=8).contains(ms)) {
+            out.push(Change::ReportRate(ms));
+        }
         out
     }
 
@@ -87,6 +94,7 @@ impl DeviceSettings {
             Change::Dpi(d) => self.dpi = Some(d),
             Change::Color(c) => self.color = Some(to_hex(c)),
             Change::Light(l) => self.light = Some(light_text(l)),
+            Change::ReportRate(ms) => self.report_rate = Some(ms),
         }
     }
 
@@ -94,6 +102,7 @@ impl DeviceSettings {
         self.dpi.is_none()
             && self.color.is_none()
             && self.light.is_none()
+            && self.report_rate.is_none()
             && self.profiles.is_empty()
             && self.programs.is_empty()
             && self.auto_switch
@@ -460,6 +469,35 @@ mod tests {
             light: Some(light.into()),
             buttons: vec!["3:80020106".into()],
         }
+    }
+
+    #[test]
+    fn report_rate_round_trip_and_older_files() {
+        let key = DeviceKey("046d:c092/G203".into());
+        let mut c = Config::default();
+        c.record(&key, Change::Dpi(1600));
+        // A file without the new field reads the same and writes no new key.
+        let old = c.to_text();
+        assert!(!old.contains("report_rate"));
+        assert_eq!(Config::parse(&old).unwrap(), c);
+        c.record(&key, Change::ReportRate(2));
+        let back = Config::parse(&c.to_text()).unwrap();
+        assert_eq!(back, c);
+        assert!(
+            back.get(&key)
+                .unwrap()
+                .changes()
+                .contains(&Change::ReportRate(2))
+        );
+        // Out of range: kept in the file, never applied.
+        c.settings_mut(&key).report_rate = Some(9);
+        assert!(
+            !c.get(&key)
+                .unwrap()
+                .changes()
+                .iter()
+                .any(|ch| matches!(ch, Change::ReportRate(_)))
+        );
     }
 
     #[test]

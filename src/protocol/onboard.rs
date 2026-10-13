@@ -338,6 +338,9 @@ pub struct ProfileEdits {
     pub dpi: Option<u16>,
     pub light: Option<Light>,
     pub buttons: Vec<(usize, Action)>,
+    /// Report interval in ms. Not part of the profile: applied live and kept
+    /// by the app; `apply_edits` ignores it.
+    pub rate: Option<u8>,
 }
 
 /// Checks the layout this code relies on: CRC, length, the DPI terminator
@@ -1093,6 +1096,7 @@ mod tests {
                         period_ms: 2000,
                     }),
                     buttons: vec![(3, Action::Mouse(0x08))],
+                    rate: None,
                 },
                 |i| {
                     (0x03..0x0b).contains(&i)
@@ -1219,6 +1223,7 @@ mod tests {
                     b: next() as u8,
                 })),
                 buttons: vec![(1 + next() as usize % 5, Action::Mouse(0x04))],
+                rate: None,
             };
             let img =
                 apply_edits(&user, 1, &samples::directory(), &limits(&range), &edits).unwrap();

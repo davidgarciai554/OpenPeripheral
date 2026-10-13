@@ -713,6 +713,14 @@ impl Worker {
                             .into_iter()
                             .chain(edits.light.map(Change::Light))
                             .collect();
+                        // The report rate is never part of the profile: it
+                        // is applied live and kept by the app.
+                        let rate = edits.rate.map(Change::ReportRate);
+                        if edits.dpi.is_none() && edits.light.is_none() && edits.buttons.is_empty()
+                        {
+                            self.save_in_app(i, rate.into_iter().collect());
+                            continue;
+                        }
                         let e = &self.entries[i];
                         if e.snapshot.info.support == Support::Auto
                             || matches!(e.profile, Some(Err(Error::HostMode)))
@@ -729,7 +737,18 @@ impl Worker {
                                 });
                                 continue;
                             }
-                            self.save_in_app(i, saved);
+                            self.save_in_app(i, saved.into_iter().chain(rate).collect());
+                            continue;
+                        }
+                        // The rate is only offered without onboard profiles
+                        // or in host mode, so it never comes with a profile
+                        // write; refused whole rather than half applied.
+                        if rate.is_some() {
+                            let name = self.entries[i].snapshot.info.name.clone();
+                            self.finish_write(Message {
+                                ok: false,
+                                text: format!("{name}: no se guardó nada; la tasa de sondeo no se puede cambiar ahora."),
+                            });
                             continue;
                         }
                         self.write_profile(
@@ -1670,6 +1689,12 @@ impl Worker {
     fn save_in_app(&mut self, i: usize, changes: Vec<Change>) {
         let name = self.entries[i].snapshot.info.name.clone();
         let key = self.entries[i].snapshot.info.key.clone();
+        // The rate of an unverified mouse is neither kept nor reapplied
+        // (plan decision 1).
+        let verified = self.entries[i].snapshot.info.support == Support::Verified;
+        let is_rate = |c: &Change| matches!(c, Change::ReportRate(_));
+        let lost_rate = !verified && changes.iter().any(is_rate);
+        let kept = verified || changes.iter().any(|c| !is_rate(c));
         let result = match (&self.api, self.entries[i].device.as_mut()) {
             (Some(api), Some(dev)) => HidTransport::open(api, dev.path())
                 .and_then(|t| changes.iter().try_for_each(|c| dev.apply(&t, *c))),
@@ -1680,12 +1705,19 @@ impl Worker {
             Ok(()) => {
                 changes
                     .into_iter()
+                    .filter(|c| verified || !is_rate(c))
                     .for_each(|c| self.config.record(&key, c));
                 self.save_config();
-                Message {
-                    ok: true,
-                    text: format!("{name}: guardado en OpenPeripheral; se aplicará al conectarlo."),
-                }
+                let text = match (kept, lost_rate) {
+                    (true, false) => {
+                        format!("{name}: guardado en OpenPeripheral; se aplicará al conectarlo.")
+                    }
+                    (true, true) => format!(
+                        "{name}: guardado en OpenPeripheral; se aplicará al conectarlo, salvo la tasa de sondeo, que se pierde al apagar el ratón."
+                    ),
+                    (false, _) => format!("{name}: aplicado; se pierde al apagar el ratón."),
+                };
+                Message { ok: true, text }
             }
             Err(err) => Message {
                 ok: false,
@@ -1748,17 +1780,30 @@ impl Worker {
 
     fn reapply(&mut self, i: usize) -> Result<(), String> {
         let key = self.entries[i].snapshot.info.key.clone();
-        let Some(changes) = self.config.get(&key).map(|s| s.changes()) else {
+        let Some(mut changes) = self.config.get(&key).map(|s| s.changes()) else {
             return Ok(());
         };
+        // New controls come back on their own only on verified mice
+        // (plan 2026-10-13-openmouse, decision 1).
+        if self.entries[i].snapshot.info.support != Support::Verified {
+            changes.retain(|c| !matches!(c, Change::ReportRate(_)));
+        }
         let Some(api) = &self.api else { return Ok(()) };
         let e = &mut self.entries[i];
         let Some(dev) = e.device.as_mut() else {
             return Ok(());
         };
         let name = e.snapshot.info.name.clone();
-        let result = HidTransport::open(api, dev.path())
-            .and_then(|t| changes.into_iter().try_for_each(|c| dev.apply(&t, c)));
+        let result = HidTransport::open(api, dev.path()).and_then(|t| {
+            changes
+                .into_iter()
+                .try_for_each(|c| match dev.apply(&t, c) {
+                    // Another program put the mouse back on its onboard
+                    // profiles: the rate cannot be set now, not an error.
+                    Err(Error::Unsupported) if matches!(c, Change::ReportRate(_)) => Ok(()),
+                    r => r,
+                })
+        });
         self.read(i);
         result.map_err(|err| {
             format!("{name}: no se pudieron reaplicar los ajustes guardados ({err}).")

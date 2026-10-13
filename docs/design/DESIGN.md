@@ -864,6 +864,26 @@ No aplica: el repositorio no usa Playwright, y la interfaz es nativa de Windows,
 - **DPI desconocido:** si el ratón no informa de su DPI (SteelSeries), «Ahora» muestra «—» hasta que OpenPeripheral fija uno, y «Guardado» no muestra nada mientras no haya un valor guardado. Los botones de valores rápidos y el campo funcionan igual.
 - La tarjeta de un ratón Logitech por Bluetooth muestra la conexión «Bluetooth».
 
+### Revisión 2026-10-13 (2): tasa de sondeo editable (plan `Planes/2026-10-13-openmouse-deteccion-y-controles.md` v2, maqueta aprobada por el usuario el 2026-10-13)
+
+- **Por qué:** el usuario pidió editar el sondeo con la lógica de OpenMouse. Solo se puede cambiar sin tocar la memoria del ratón en uno sin perfiles integrados o en uno que ya está en modo host. El G305 y el G203, en modo perfiles integrados, rechazan el cambio en vivo (comprobado en el G203 el 2026-10-13), así que en ellos la sección es de solo lectura. Esta revisión prevalece sobre «Tasa de sondeo y Restaurar» y sobre la frase de «Avanzado» «La pestaña no tiene nada más».
+- **Dónde:** primera sección de «Avanzado», «Rendimiento del sensor», encima de los programas vinculados. Solo aparece si el ratón informa de su tasa.
+- **Título** «Rendimiento del sensor» y la línea «Tasa de sondeo (actual: 1000 Hz)».
+- **Editable:**
+  - Un botón por cada tasa que declara el ratón, de menor a mayor («125 Hz», «250 Hz»…). Cada botón tiene su propio Tab, porque elegir no escribe nada.
+  - La tasa elegida se marca con el estilo de valor elegido de «Valores rápidos» (fondo `surface.selected`, borde `text.primary`, seminegrita y estado presionado), nunca solo con color.
+  - Elegir una tasa distinta de la actual la deja **pendiente** en la barra común («Tasa de sondeo: 500 Hz»). «Descartar» la quita.
+  - «Guardar» la aplica en vivo, la relee y la recuerda en OpenPeripheral. **No se escribe en la memoria del ratón.**
+  - Ayuda, según la decisión 1 del plan:
+    - ratón verificado: «Se pierde al apagar el ratón. OpenPeripheral la vuelve a aplicar al conectarlo.»;
+    - ratón detectado automáticamente: «Se pierde al apagar el ratón.».
+- **Solo lectura:** la línea de la tasa y «No se puede cambiar sin pasar el ratón a modo host, que es permanente.». Es el caso del G305 y del G203.
+- **Barra común:** si solo está pendiente la tasa, dice «1 cambio sin guardar.» y el botón es «Guardar…», porque no se escribe en la memoria del ratón.
+- **Errores:** si el ratón rechaza la tasa o no responde, la barra muestra el error de guardado de siempre y la tasa sigue como estaba.
+- **Accesibilidad:** el texto «Tasa de sondeo (actual: …)» precede a los botones, y cada botón se llama «500 Hz» («500 Hz, elegida» si está marcado). Los colores y tamaños son los existentes; no se añade ningún token.
+- **Reaplicar:** si un ratón verificado vuelve a sus perfiles integrados (por ejemplo, por otro programa), la tasa guardada se omite al reconectarlo, sin mostrar un error.
+- **Cabecera:** sigue mostrando la tasa actual como dato.
+
 ### Revisión 2026-10-13: «Acerca de» (plan `Planes/2026-10-13-licencia-agpl.md`)
 
 - **Por qué:** el proyecto pasa a la licencia AGPL-3.0-or-later. Su §5(d) pide que la interfaz muestre el copyright, que no hay garantía y cómo ver la licencia.

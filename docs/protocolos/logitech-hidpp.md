@@ -26,7 +26,8 @@ Implementación: `src/protocol/hidpp.rs`, `src/protocol/onboard.rs` (perfiles in
 | 0x1004 | fn1 | Batería unificada: %, nivel, estado (0 descarga; 1, 2 cargando; 3 completa) | No |
 | 0x2201 | fn1 lista, fn2 actual | DPI permitido y actual | No |
 | 0x2201 | fn3 setSensorDpi | Cambiar DPI. **Volátil**: no toca los perfiles en flash. | Sí |
-| 0x8060 | fn0 lista, fn1 actual | Tasa de sondeo, solo lectura | No |
+| 0x8060 | fn0 lista, fn1 actual | Tasa de sondeo | No |
+| 0x8060 | fn2 setReportRate | Cambiar la tasa (intervalo en ms) y releerla. **Volátil**. Solo en ratones sin perfiles integrados o que ya estén en modo host. Nunca se cambia el modo | Sí |
 | 0x8100 | fn0 getInfo, fn4 getCurrentProfile, fn5 memoryRead | Leer el perfil integrado activo, el directorio y la copia de fábrica | No |
 | 0x8100 | fn6 memoryWriteStart, fn7 memoryWrite, fn8 memoryWriteEnd | Guardar los botones en el perfil de usuario activo. **Persistente**: escribe en la memoria del ratón | Sí |
 
@@ -167,3 +168,26 @@ Fuentes: lectura de la tabla de features y de `0x8070` con funciones de consulta
 - Las rutas que no responden se omiten en los sondeos periódicos y se reintentan al cambiar los dispositivos, al pulsar «Actualizar», con una notificación de conexión o cada 5 minutos (un ratón dormido tras un receptor no avisa al despertar).
 - Guardar el DPI o la luz de un modelo así no escribe en su memoria: se guarda en la configuración de la app, que lo reaplica al conectarlo.
 - Probado en un G203 LIGHTSYNC por cable (046D:C092, interfaz 1): responde en `0xFF`, DPI 50–8000 con paso 50 y 1000 Hz.
+
+## Tasa de sondeo editable (2026-10-13, plan `openmouse-deteccion-y-controles`)
+
+- **Fuente:** OpenMouse, `@openmouse/protocol` 0.40.1 (AGPL-3.0-or-later), `dist/drivers/logitech/hidpp.js`: `setLegacyReportRate` (0x8060 fn2 con el intervalo en ms y relectura con fn1) y `ensureHostControl`.
+- **Lo que no se porta:**
+  - OpenMouse pasa a modo host (`0x8100 setOnboardMode 2`) a los ratones tras un receptor antes de escribir la tasa. Según su propio comentario, es un cambio persistente que deja sin efecto el perfil integrado.
+  - Si el ratón por cable rechaza la escritura en vivo, OpenMouse escribe la tasa en el perfil integrado (`writeActiveProfile`, borrado y escritura de flash).
+  - OpenPeripheral no hace ninguna de las dos cosas: un rechazo se muestra como error.
+- **Cuándo se ofrece:**
+  - Solo si el ratón no tiene 0x8100 o ya está en modo host (`getOnboardMode` = 2). El valor tiene que estar en la lista del propio ratón y se relee después de escribirlo.
+  - Al principio se ofrecía también por cable, porque OpenMouse intenta la escritura en vivo en esos ratones. Pero el G203 por cable la rechaza en modo `1` (ver «Verificación en hardware»). Desde entonces, en el G305 y el G203 la tasa solo se muestra; la escritura por cable se retiró por decisión del usuario del 2026-10-13.
+- **Solo 0x8060:** 0x8061 (tasa extendida, hasta 8000 Hz) confirma el cambio con una notificación asíncrona y no está implementado. Los ratones que solo tienen 0x8061 muestran la tasa sin poder cambiarla.
+- **Reaplicar:** la tasa guardada en la app solo se reaplica al reconectar ratones verificados (`SUPPORTED`).
+- **Pruebas sin hardware:** `wired_report_rate_is_set_live_and_read_back`, `rejected_report_rate_has_no_fallback_to_the_profile` y `receiver_mouse_in_onboard_mode_never_gets_a_rate` (`src/devices/logitech.rs`). Comprueban que nunca se envía 0x8100 fn1 ni fn6–fn8.
+- **Features declaradas** (puerta 1, solo lectura, 0x0001 FeatureSet, 2026-10-13):
+  - G203 por cable (`0xFF`): 0000 0001 0003 0005 1801 1802 1806 1E00 1E22 1EB0 2201 18B1 00C2 8060 8071 8100 8110 18A1 8081.
+  - G305 tras el receptor (índice 1): 0000 0001 0003 0005 1D4B 1000 8070 8100 8110 8060 8090 00C2 1802 1803 1806 1811 1805 1830 1890 1DF3 1E00 1EB0 1861 18B1 1E22 1801 2201.
+  - Ninguno tiene 0x2202 (DPI extendido con lift-off) ni 0x1B04 (reasignación de controles). En estos ratones no hay lift-off ni reasignación de botones fuera del perfil integrado.
+- **Verificación en hardware (puertas 2 y 4, G203 por cable, 2026-10-13, autorizadas por el usuario):**
+  - Desde la app, con una configuración aislada, se pidió 500 Hz (2 ms) en el G203, que estaba en modo `1`.
+  - El ratón respondió con error HID++ 2.0 («función no admitida»). La app mostró el error y la tasa siguió en 1 ms.
+  - El sector `0x0001` del perfil, leído antes y después (solo lectura), quedó idéntico byte a byte. El modo siguió en `1` y no se guardó nada en la configuración.
+  - Ese ratón no tiene vía volátil para la tasa. La puerta 3 (desenchufar) no hizo falta, porque no cambió nada.

@@ -161,6 +161,17 @@ pub fn probe(
 }
 
 impl HidppDevice {
+    /// The report rate can be set live only on a mouse without onboard
+    /// profiles or one already in host mode. In onboard mode the G305 and
+    /// the G203 (by cable too) reject 0x8060 fn2 (verified 2026-10-13), and
+    /// host mode is persistent, so this app never sets it.
+    fn rate_writable(&mut self, t: &dyn Transport) -> Result<bool> {
+        Ok(match self.optional(t, Request::GetOnboardMode)? {
+            None => true,
+            Some(mode) => mode.first() == Some(&2),
+        })
+    }
+
     /// Effect ids of light zone 0 (0x8070); empty without that feature.
     /// Only the first zone is used: the G305 declares one.
     fn light_effects(&mut self, t: &dyn Transport) -> Result<Vec<u16>> {
@@ -335,6 +346,7 @@ impl Device for HidppDevice {
                 state.report_rate = Some(ReportRate {
                     current_ms,
                     supported_ms,
+                    writable: self.rate_writable(t)?,
                 });
             }
         }
@@ -367,6 +379,21 @@ impl Device for HidppDevice {
                         light,
                     },
                 )?;
+            }
+            Change::ReportRate(ms) => {
+                let list = self.request(t, Request::ReportRateList)?;
+                let supported = hidpp::parse_report_rate_list(&list)
+                    .ok_or(Error::Protocol("lista de tasas"))?;
+                if !supported.contains(&ms) || !self.rate_writable(t)? {
+                    return Err(Error::Unsupported);
+                }
+                // A rejection is returned as is: there is no fallback to the
+                // profile memory (OpenMouse writes the profile there).
+                self.request(t, Request::SetReportRate { ms })?;
+                let back = self.request(t, Request::GetReportRate)?;
+                if hidpp::parse_report_rate(&back) != Some(ms) {
+                    return Err(Error::Protocol("el ratón mantuvo otra tasa"));
+                }
             }
             Change::Color(_) => return Err(Error::Unsupported),
         }
@@ -642,6 +669,103 @@ mod tests {
             d.write_profile(&t, &image),
             Err(Error::Protocol("la memoria releída no coincide"))
         );
+    }
+
+    /// A wired mouse (index 0xFF) with 0x8060 and onboard profiles in
+    /// `mode` (1 onboard, 2 host). `accept`: it takes setReportRate, or
+    /// rejects it.
+    fn wired_rate(accept: bool, mode: u8) -> FakeTransport {
+        let rate = std::cell::Cell::new(1u8);
+        FakeTransport::new(move |req| {
+            let (idx, feat, func) = (req[1], req[2], req[3]);
+            if idx != 0xff {
+                return vec![];
+            }
+            let mut r = vec![0u8; 20];
+            r[..4].copy_from_slice(&req[..4]);
+            let current = [rate.get()];
+            let p: &[u8] = match (feat, func >> 4) {
+                (0, 1) => &[4, 2, req[6]],
+                (0, 0) => match u16::from_be_bytes([req[4], req[5]]) {
+                    0x0005 => &[2],
+                    0x8060 => &[6],
+                    0x8100 => &[7],
+                    _ => &[0],
+                },
+                (2, 0) => &[4],
+                (2, 1) => b"G203",
+                (6, 0) => &[0b1000_1011],
+                (6, 1) => &current,
+                (6, 2) if accept => {
+                    rate.set(req[4]);
+                    &[]
+                }
+                (7, 2) => std::slice::from_ref(&mode),
+                _ => return vec![vec![0x11, 0xff, 0xff, feat, func, 0x02, 0, 0, 0, 0]],
+            };
+            r[4..4 + p.len()].copy_from_slice(p);
+            vec![r]
+        })
+    }
+
+    /// 0x8100 setOnboardMode or a memory write: never sent for the rate.
+    fn touched_memory(t: &FakeTransport) -> bool {
+        t.sent
+            .borrow()
+            .iter()
+            .any(|r| r[2] == 7 && matches!(r[3] >> 4, 1 | 6..=8))
+    }
+
+    fn g203() -> &'static Supported {
+        SUPPORTED.iter().find(|s| s.pid == 0xc092).unwrap()
+    }
+
+    #[test]
+    fn report_rate_in_host_mode_is_set_live_and_read_back() {
+        let t = wired_rate(true, 2);
+        let mut d = probe(g203(), 0xc092, CString::new("x").unwrap(), &t).remove(0);
+        assert!(d.read_state(&t).unwrap().report_rate.unwrap().writable);
+        d.apply(&t, Change::ReportRate(2)).unwrap();
+        assert!(
+            t.sent
+                .borrow()
+                .iter()
+                .any(|r| r[2] == 6 && r[3] >> 4 == 2 && r[4] == 2)
+        );
+        assert_eq!(d.read_state(&t).unwrap().report_rate.unwrap().current_ms, 2);
+        // An interval the mouse does not list is refused before sending.
+        assert_eq!(d.apply(&t, Change::ReportRate(3)), Err(Error::Unsupported));
+        assert!(!touched_memory(&t));
+    }
+
+    #[test]
+    fn wired_mouse_in_onboard_mode_never_gets_a_rate() {
+        // The G203 by cable rejects it (2026-10-13): nothing is offered.
+        let t = wired_rate(true, 1);
+        let mut d = probe(g203(), 0xc092, CString::new("x").unwrap(), &t).remove(0);
+        assert!(!d.read_state(&t).unwrap().report_rate.unwrap().writable);
+        assert_eq!(d.apply(&t, Change::ReportRate(2)), Err(Error::Unsupported));
+        assert!(!t.sent.borrow().iter().any(|r| r[2] == 6 && r[3] >> 4 == 2));
+        assert!(!touched_memory(&t));
+    }
+
+    #[test]
+    fn rejected_report_rate_has_no_fallback_to_the_profile() {
+        let t = wired_rate(false, 2);
+        let mut d = probe(g203(), 0xc092, CString::new("x").unwrap(), &t).remove(0);
+        assert_eq!(d.apply(&t, Change::ReportRate(2)), Err(Error::Unsupported));
+        assert!(!touched_memory(&t));
+    }
+
+    #[test]
+    fn receiver_mouse_in_onboard_mode_never_gets_a_rate() {
+        // It would need host mode, which is persistent.
+        let t = g305();
+        let mut d = probe(&SUPPORTED[0], 0xc53f, CString::new("x").unwrap(), &t).remove(0);
+        assert!(!d.read_state(&t).unwrap().report_rate.unwrap().writable);
+        assert_eq!(d.apply(&t, Change::ReportRate(2)), Err(Error::Unsupported));
+        assert!(!t.sent.borrow().iter().any(|r| r[2] == 6 && r[3] >> 4 == 2));
+        assert!(!touched_memory(&t));
     }
 
     #[test]

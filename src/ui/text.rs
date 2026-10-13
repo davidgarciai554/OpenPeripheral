@@ -651,6 +651,7 @@ mod tests {
             s.report_rate = Some(crate::devices::ReportRate {
                 current_ms: 1,
                 supported_ms: vec![1],
+                writable: false,
             });
         }
         assert_eq!(card_status(&g), "Conectado · Receptor LIGHTSPEED");

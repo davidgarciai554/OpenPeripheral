@@ -133,6 +133,7 @@ impl MouseProfile {
                 .into_iter()
                 .filter(|(i, a)| buttons.get(*i) != Some(a))
                 .collect(),
+            rate: None,
         }
     }
 
@@ -271,6 +272,7 @@ mod tests {
                 dpi: Some(1600),
                 light: Some(Light::Fixed(red)),
                 buttons: vec![(3, Action::Mouse(0x08))],
+                rate: None,
             }
         );
         // Once the mouse holds it, nothing is left to write.

@@ -160,10 +160,15 @@ pub fn listed(api: &HidApi) -> Vec<DeviceInfo> {
         {
             continue;
         }
-        let name = listed_name(
-            d.manufacturer_string().unwrap_or(""),
-            d.product_string().unwrap_or(""),
-        );
+        // A known model is named from the table: receivers often report a
+        // generic name ("2.4G Mouse") or none.
+        let name = match devices::listed_data::model(vid, pid) {
+            Some(m) => format!("{} {}", m.vendor, m.model),
+            None => listed_name(
+                d.manufacturer_string().unwrap_or(""),
+                d.product_string().unwrap_or(""),
+            ),
+        };
         if name.is_empty() {
             continue;
         }

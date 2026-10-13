@@ -155,6 +155,13 @@ const ID_GAM_FOOT: i32 = 604;
 const ID_GAM_EMPTY: i32 = 606;
 const ID_GAM_ADD: i32 = 607;
 const ID_GAM_STATUS: i32 = 609;
+// «Avanzado» › «Rendimiento del sensor»: the report rate (revisión
+// 2026-10-13 (2)). Inside the «Avanzado» id range.
+const ID_RATE_TITLE: i32 = 610;
+const ID_RATE_NOW: i32 = 611;
+const ID_RATE_HELP: i32 = 612;
+const ID_RATE0: i32 = 620; // ..=627, one per interval of 1 to 8 ms
+const MAX_RATES: i32 = 8;
 const ID_GAM_NAME0: i32 = 700; // ..=763 programs
 const ID_GAM_PATH0: i32 = 800;
 const ID_GAM_DEL0: i32 = 1000;
@@ -279,6 +286,8 @@ pub(crate) struct MouseState {
     status_icon: Option<(i32, i32, bool)>,
     /// Field rejected on the last "Aplicar"; cleared when edited.
     invalid: bool,
+    /// Report interval (ms) chosen in «Avanzado», not saved yet.
+    rate: Option<u8>,
     pending: Option<(u64, Pending)>,
     /// Last completed apply: (ok, value).
     applied: Option<(bool, u16)>,
@@ -428,15 +437,35 @@ fn pending_edits(m: &MouseState, snap: Option<&Snapshot>, field: Option<u16>) ->
         .as_ref()
         .and_then(Pick::light)
         .filter(|&l| Some(l) != snap_base_light(snap));
+    let rate = m.rate.filter(|&ms| {
+        rate_of(snap)
+            .is_some_and(|r| r.writable && r.current_ms != ms && r.supported_ms.contains(&ms))
+    });
     ProfileEdits {
         dpi,
         light,
         buttons: m.edits.clone(),
+        rate,
+    }
+}
+
+fn rate_of(snap: &Snapshot) -> Option<&crate::devices::ReportRate> {
+    match &snap.status {
+        Status::Ok(st) => st.report_rate.as_ref(),
+        _ => None,
     }
 }
 
 fn count(e: &ProfileEdits) -> usize {
-    e.dpi.is_some() as usize + e.light.is_some() as usize + e.buttons.len()
+    e.dpi.is_some() as usize
+        + e.light.is_some() as usize
+        + e.buttons.len()
+        + e.rate.is_some() as usize
+}
+
+/// Only the report rate is pending: nothing goes to the mouse's memory.
+fn only_rate(e: &ProfileEdits) -> bool {
+    e.rate.is_some() && e.dpi.is_none() && e.light.is_none() && e.buttons.is_empty()
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,6 +1188,25 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
     add(ID_LIGHT_SAVED, Kind::Text(Secondary, Card), s, "", st);
     add(ID_LIGHT_STATUS, Kind::Text(Secondary, Card), s, "", st);
     add(
+        ID_RATE_TITLE,
+        Kind::Text(Name, Card),
+        s,
+        "Rendimiento del sensor",
+        st | WS_GROUP.0,
+    );
+    add(ID_RATE_NOW, Kind::Text(Secondary, Card), s, "", st);
+    // Choosing does not write: one Tab stop per button (DESIGN.md).
+    for i in 0..MAX_RATES {
+        add(
+            ID_RATE0 + i,
+            Kind::Button(ButtonStyle::Normal, Card),
+            b,
+            "",
+            btn,
+        );
+    }
+    add(ID_RATE_HELP, Kind::Text(Secondary, Card), s, "", st);
+    add(
         ID_GAM_TITLE,
         Kind::Text(Name, Card),
         s,
@@ -1226,6 +1274,8 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
                 || [ID_BAR_DISCARD, ID_BAR_SAVE, ID_BTN_ACTIVATE].contains(&id)
                 || (ID_PILL0..ID_PILL0 + MAX_ROWS).contains(&id)
                 || (ID_GAM_DEL0..ID_GAM_DEL0 + MAX_PROGS).contains(&id)
+                || (ID_RATE0..ID_RATE0 + MAX_RATES).contains(&id)
+                || id == ID_RATE_TITLE
                 || [
                     ID_PRF_LABEL,
                     ID_PRF_NEW,
@@ -1248,6 +1298,7 @@ pub(crate) fn enter(view: HWND, key: DeviceKey) {
         battery: None,
         status_icon: None,
         invalid: false,
+        rate: None,
         pending: None,
         applied: None,
         restore_text: None,
@@ -2028,6 +2079,8 @@ pub(crate) fn refresh(view: HWND) {
     let failed = matches!(result, Some((false, _)));
     if n == 0 {
         set(ID_BAR_TEXT, "");
+    } else if only_rate(&edits) {
+        set(ID_BAR_TEXT, "1 cambio sin guardar.");
     } else {
         set(
             ID_BAR_TEXT,
@@ -2043,6 +2096,8 @@ pub(crate) fn refresh(view: HWND) {
         ID_BAR_SAVE,
         if failed {
             "Reintentar…"
+        } else if only_rate(&edits) {
+            "Guardar…"
         } else {
             "Guardar en el ratón…"
         },
@@ -2075,6 +2130,7 @@ pub(crate) fn refresh(view: HWND) {
     });
 
     refresh_profiles(snap, &shared, connected, pending);
+    refresh_rate(snap, connected, busy);
     refresh_games(snap, &shared, pending, !edits.buttons.is_empty());
 
     // Why nothing can be written, and «Restaurar originales» (the restores
@@ -2282,6 +2338,84 @@ pub fn linked_programs(programs: &[crate::games::Program], active: Option<&str>)
         .filter(|p| p.profile.as_deref() == Some(active))
         .map(|p| p.exe.clone())
         .collect()
+}
+
+/// «Rendimiento del sensor»: the rate, editable only where it needs no
+/// host mode (`ReportRate::writable`).
+fn refresh_rate(snap: Option<&Snapshot>, connected: bool, busy: bool) {
+    let rate = snap.and_then(rate_of).cloned();
+    show(ID_RATE_TITLE, rate.is_some());
+    let picked = with_app(|a| a.view.mouse.as_ref().and_then(|m| m.rate)).flatten();
+    let Some(r) = rate else {
+        for id in [ID_RATE_NOW, ID_RATE_HELP] {
+            set(id, "");
+        }
+        for i in 0..MAX_RATES {
+            show(ID_RATE0 + i, false);
+        }
+        return;
+    };
+    set(
+        ID_RATE_NOW,
+        &format!("Tasa de sondeo (actual: {} Hz)", text::hz(r.current_ms)),
+    );
+    if !r.writable {
+        set(
+            ID_RATE_HELP,
+            "No se puede cambiar sin pasar el ratón a modo host, que es permanente.",
+        );
+        for i in 0..MAX_RATES {
+            show(ID_RATE0 + i, false);
+        }
+        return;
+    }
+    let verified = snap.is_some_and(|s| s.info.support == crate::devices::Support::Verified);
+    set(
+        ID_RATE_HELP,
+        if verified {
+            "Se pierde al apagar el ratón. OpenPeripheral la vuelve a aplicar al conectarlo."
+        } else {
+            "Se pierde al apagar el ratón."
+        },
+    );
+    let list = rate_list(&r);
+    let chosen = picked.unwrap_or(r.current_ms);
+    for i in 0..MAX_RATES {
+        let id = ID_RATE0 + i;
+        match list.get(i as usize) {
+            Some(&ms) => {
+                let is = ms == chosen;
+                let label = format!("{} Hz", text::hz(ms));
+                set(
+                    id,
+                    &if is {
+                        format!("{label}, elegida")
+                    } else {
+                        label
+                    },
+                );
+                show(id, true);
+                set_style(
+                    id,
+                    if is {
+                        ButtonStyle::Selected
+                    } else {
+                        ButtonStyle::Normal
+                    },
+                );
+                enable(id, connected && !busy);
+            }
+            None => show(id, false),
+        }
+    }
+}
+
+/// The intervals the mouse declares, from the lowest rate to the highest.
+fn rate_list(r: &crate::devices::ReportRate) -> Vec<u8> {
+    let mut list = r.supported_ms.clone();
+    list.sort_unstable_by(|a, b| b.cmp(a));
+    list.truncate(MAX_RATES as usize);
+    list
 }
 
 /// Texts and states of «Avanzado»: the programs linked to the active
@@ -2678,6 +2812,9 @@ fn finish_write(what: Write, message: Option<&crate::app::Message>) {
                 m.then_use = None;
             }
             let text = match (what, ok) {
+                (Write::Save, true) if cause.contains("se pierde al apagar") => {
+                    "Aplicado. Se pierde al apagar el ratón.".to_string()
+                }
                 (Write::Save, true) if cause.contains("guardado en OpenPeripheral") => {
                     "Guardado en OpenPeripheral: se aplicará cada vez que conectes el ratón.".to_string()
                 }
@@ -2694,6 +2831,7 @@ fn finish_write(what: Write, message: Option<&crate::app::Message>) {
             };
             if ok && what == Write::Save {
                 m.edits.clear();
+                m.rate = None;
             }
             if ok {
                 // The saved DPI and light changed: start again from them.
@@ -3810,6 +3948,55 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         y = cy + px(20.0);
     }
 
+    // «Avanzado» › «Rendimiento del sensor».
+    let rate_ids: Vec<i32> = (0..MAX_RATES)
+        .map(|i| ID_RATE0 + i)
+        .filter(|&id| visible(id))
+        .collect();
+    if visible(ID_RATE_TITLE) {
+        let top = y;
+        let mut cy = y + pad;
+        let (_, h) = measure(ID_RATE_TITLE, Role::Name, inner);
+        put(ID_RATE_TITLE, ix, cy, inner, h);
+        cy += h + px(4.0);
+        let (_, h) = measure(ID_RATE_NOW, Role::Secondary, inner);
+        put(ID_RATE_NOW, ix, cy, inner, h);
+        cy += h + px(12.0);
+        if !rate_ids.is_empty() {
+            let cols = if g.compact { 2 } else { 4 };
+            let cell = (inner - px(8.0) * (cols - 1)) / cols;
+            for (k, id) in rate_ids.iter().enumerate() {
+                let (r, c) = (k as i32 / cols, k as i32 % cols);
+                put(
+                    *id,
+                    ix + c * (cell + px(8.0)) - ring,
+                    cy + r * (bh + px(8.0)) - ring,
+                    cell + 2 * ring,
+                    bh + 2 * ring,
+                );
+            }
+            let rows_n = (rate_ids.len() as i32 + cols - 1) / cols;
+            cy += rows_n * bh + (rows_n - 1) * px(8.0) + px(12.0);
+        }
+        let (_, h) = measure(ID_RATE_HELP, Role::Secondary, inner);
+        put(ID_RATE_HELP, ix, cy, inner, h);
+        cy += h + pad;
+        cards.push(RECT {
+            left,
+            top,
+            right: left + col,
+            bottom: cy,
+        });
+        y = cy + px(20.0);
+    } else {
+        for id in [ID_RATE_TITLE, ID_RATE_NOW, ID_RATE_HELP]
+            .into_iter()
+            .chain((0..MAX_RATES).map(|i| ID_RATE0 + i))
+        {
+            put(id, 0, 0, 0, 0);
+        }
+    }
+
     // «Avanzado»: the programs linked to the active profile.
     let prog_ids = |i: i32| [ID_GAM_NAME0 + i, ID_GAM_PATH0 + i, ID_GAM_DEL0 + i];
     if visible(ID_GAM_TITLE) {
@@ -4449,6 +4636,9 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
         }
         ID_LIGHT_TRY => get_text(dis.hwndItem),
         d if in_group(d, ID_GAM_DEL0, MAX_PROGS).is_some() => "Desvincular".into(),
+        r if in_group(r, ID_RATE0, MAX_RATES).is_some() => get_text(dis.hwndItem)
+            .trim_end_matches(", elegida")
+            .to_string(),
         ID_BACK => "‹  Dispositivos".to_string(),
         ID_MINUS => "−".into(),
         ID_PLUS => "+".into(),
@@ -5386,6 +5576,12 @@ pub fn change_lines(
             light::describe(l)
         ));
     }
+    if let Some(ms) = edits.rate {
+        lines.push(format!(
+            "Tasa de sondeo: {} Hz (no se escribe en la memoria del ratón)",
+            text::hz(ms)
+        ));
+    }
     for &(r, a) in &edits.buttons {
         let before = buttons.get(r).map(|&b| text::action(b)).unwrap_or_default();
         lines.push(format!(
@@ -5455,7 +5651,25 @@ fn confirm_save(view: HWND) {
         .unwrap_or(false)
     });
     let changes = plural(n, "cambio", "cambios");
-    let (title, note, action) = if auto {
+    let verified = super::snapshot().is_some_and(|shared| {
+        with_app(|a| {
+            let m = a.view.mouse.as_ref()?;
+            snapshot(&shared, &m.key).map(|s| s.info.support == crate::devices::Support::Verified)
+        })
+        .flatten()
+        .unwrap_or(false)
+    });
+    let (title, note, action) = if only_rate(&edits) {
+        (
+            format!("¿Guardar {changes}?"),
+            if verified {
+                "Se aplica ahora y OpenPeripheral la vuelve a aplicar al conectar el ratón. No se escribe en su memoria."
+            } else {
+                "Se aplica ahora y se pierde al apagar el ratón. No se escribe en su memoria."
+            },
+            "Guardar",
+        )
+    } else if auto {
         (
             format!("¿Guardar {changes}?"),
             "OpenPeripheral los aplicará cada vez que conectes el ratón. No se escriben en su memoria.",
@@ -5491,6 +5705,7 @@ fn discard(view: HWND) {
     let undo = with_app(|a| {
         let m = a.view.mouse.as_mut()?;
         m.edits.clear();
+        m.rate = None;
         m.buttons_result = None;
         m.invalid = false;
         m.applied = None;
@@ -6312,6 +6527,20 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32, lparam: LPARAM) -> bool
                 send_games(view, Command::RemoveProgram(key, exe));
             }
         }
+        (r, BN_CLICKED) if in_group(r, ID_RATE0, MAX_RATES).is_some() => {
+            // Only marks the rate as pending; «Guardar» sends it.
+            if let Some(shared) = super::snapshot() {
+                with_app(|a| {
+                    let m = a.view.mouse.as_mut()?;
+                    let rate = snapshot(&shared, &m.key).and_then(rate_of)?;
+                    let ms = *rate_list(rate).get((r - ID_RATE0) as usize)?;
+                    m.rate = (ms != rate.current_ms).then_some(ms);
+                    m.buttons_result = None;
+                    Some(())
+                });
+            }
+            refresh(view);
+        }
         (ID_GAM_ADD, BN_CLICKED) => {
             if let Some(exe) = pick_exe(view) {
                 link_program(view, exe);
@@ -6531,6 +6760,7 @@ mod tests {
                     usage: 0x06,
                 },
             )],
+            rate: None,
         };
         let lines = change_lines(
             &edits,
@@ -6552,6 +6782,33 @@ mod tests {
             ]
         );
         assert_eq!(count(&edits), 3);
+    }
+
+    #[test]
+    fn the_rate_alone_is_not_a_write_to_the_mouse() {
+        let rate = ProfileEdits {
+            rate: Some(2),
+            ..Default::default()
+        };
+        assert!(only_rate(&rate));
+        assert_eq!(count(&rate), 1);
+        assert_eq!(
+            change_lines(&rate, None, None, &[]),
+            vec!["Tasa de sondeo: 500 Hz (no se escribe en la memoria del ratón)".to_string()]
+        );
+        let both = ProfileEdits {
+            dpi: Some(800),
+            ..rate
+        };
+        assert!(!only_rate(&both));
+        assert_eq!(count(&both), 2);
+        // Lowest rate first; never more buttons than the page has.
+        let r = crate::devices::ReportRate {
+            current_ms: 1,
+            supported_ms: vec![1, 2, 4, 8],
+            writable: true,
+        };
+        assert_eq!(rate_list(&r), vec![8, 4, 2, 1]);
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod asus;
 #[cfg(test)]
 mod catalog;
 mod dualsense;
+pub(crate) mod listed_data;
 mod logitech;
 mod razer;
 #[cfg(test)]
@@ -397,6 +398,8 @@ pub struct ReportRate {
     /// Interval in ms (1 ms = 1000 Hz).
     pub current_ms: u8,
     pub supported_ms: Vec<u8>,
+    /// It can be changed without touching the mouse memory.
+    pub writable: bool,
 }
 
 /// What the device currently reports. `None` means not offered or unreadable.
@@ -416,6 +419,8 @@ pub enum Change {
     Color(Rgb),
     /// Mouse light (0x8070), not stored in the profile.
     Light(crate::protocol::onboard::Light),
+    /// Report interval in ms (1 ms = 1000 Hz), not stored in the profile.
+    ReportRate(u8),
 }
 
 /// Raw onboard-profile memory read from a mouse (HID++ 0x8100). Kept by the
