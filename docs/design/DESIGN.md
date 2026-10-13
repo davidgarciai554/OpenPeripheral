@@ -460,6 +460,7 @@ Decisiones del usuario y de la mesa redonda del 2026-10-08; la maqueta aprobada 
   - **Notificaciones y avisos:**
     - «Notificaciones de Windows»: «Juego nuevo y cambios de perfil que fallan. Si las desactivas, los fallos se siguen mostrando en la página del ratón».
     - «Avisar de programas que pueden sobrescribir tus ajustes»: «Por ejemplo G HUB o Razer Synapse. Con G HUB abierto, guardar en el ratón sigue bloqueado aunque desactives el aviso».
+  - **Acerca de** (última tarjeta; ver «Revisión 2026-10-13»): nombre y versión, copyright, aviso de licencia y garantía, la dirección del código fuente y el botón «Código fuente y licencia ↗».
 - Las casillas y opciones son nativas. Cada cambio se guarda al momento en la configuración.
 
 #### Lo que desaparece
@@ -862,3 +863,17 @@ No aplica: el repositorio no usa Playwright, y la interfaz es nativa de Windows,
   - «Botones» muestra el estado «Este ratón todavía no permite cambiar sus botones…».
 - **DPI desconocido:** si el ratón no informa de su DPI (SteelSeries), «Ahora» muestra «—» hasta que OpenPeripheral fija uno, y «Guardado» no muestra nada mientras no haya un valor guardado. Los botones de valores rápidos y el campo funcionan igual.
 - La tarjeta de un ratón Logitech por Bluetooth muestra la conexión «Bluetooth».
+
+### Revisión 2026-10-13: «Acerca de» (plan `Planes/2026-10-13-licencia-agpl.md`)
+
+- **Por qué:** el proyecto pasa a la licencia AGPL-3.0-or-later. Su §5(d) pide que la interfaz muestre el copyright, que no hay garantía y cómo ver la licencia.
+- **Dónde:** última tarjeta de «Ajustes», después de «Notificaciones y avisos»:
+  - título «Acerca de»;
+  - «OpenPeripheral <versión>» en negrita (la versión de `Cargo.toml`);
+  - «Copyright (C) 2026 Chidev»;
+  - «Este programa se ofrece sin ninguna garantía. Es software libre bajo la licencia GNU AGPL versión 3 o posterior: puedes redistribuirlo y modificarlo según sus términos.»;
+  - la dirección `https://github.com/davidgarciai554/OpenPeripheral` en texto, que sirve aunque no haya navegador;
+  - botón «Código fuente y licencia ↗», con nombre accesible «Ver código fuente y licencia (se abre en el navegador)».
+- **Comportamiento:** el botón abre la dirección en el navegador predeterminado (solo admite una dirección fija `https://`). Si falla, aparece debajo «No se pudo abrir el navegador (…). La dirección es la de arriba.».
+- **Teclado y foco:** el botón es el último control de la página en el orden de Tab. Intro y Espacio lo activan, y al enfocarlo la página se desplaza para mostrarlo.
+- **Adaptación:** los textos se ajustan al ancho de la tarjeta; no se añaden colores ni tamaños nuevos (roles `Name`, `Strong` y `Secondary`).

@@ -111,9 +111,11 @@ cargo clippy --all-targets -- -D warnings
 
 ## Licencia
 
-Doble licencia, a tu elección: [MIT](LICENSE-MIT) o [Apache-2.0](LICENSE-APACHE).
+Copyright (C) 2026 Chidev.
 
-Los protocolos se han reimplementado a partir de documentación pública y de observación propia. No incluye código de proyectos GPL o AGPL como OpenRazer, OpenRGB u OpenMouse.
+OpenPeripheral es software libre: puedes redistribuirlo y modificarlo según los términos de la [GNU Affero General Public License](LICENSE), versión 3 o (a tu elección) cualquier versión posterior, publicada por la Free Software Foundation (`AGPL-3.0-or-later`). Se distribuye sin ninguna garantía; consulta la licencia para más detalles.
+
+Código fuente: <https://github.com/davidgarciai554/OpenPeripheral>
 
 Datos y código de terceros con licencias compatibles:
 

@@ -197,3 +197,54 @@ mod pointer_tests {
         }
     }
 }
+
+/// Only plain `https://` addresses with no spaces or control characters
+/// reach the shell; anything else could run a program or a verb.
+pub(crate) fn is_safe_url(url: &str) -> bool {
+    url.len() > "https://".len()
+        && url.starts_with("https://")
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Opens an `https://` address in the default browser.
+pub fn open_url(url: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    if !is_safe_url(url) {
+        return Err(format!("dirección no admitida: {url}"));
+    }
+    let r = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecute reports success with a value above 32.
+    if r.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(format!("ShellExecute devolvió {}", r.0 as usize))
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::is_safe_url;
+
+    #[test]
+    fn only_plain_https_urls_are_opened() {
+        assert!(is_safe_url(
+            "https://github.com/davidgarciai554/OpenPeripheral"
+        ));
+        assert!(!is_safe_url("https://"));
+        assert!(!is_safe_url("http://github.com"));
+        assert!(!is_safe_url("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_safe_url("calc.exe"));
+        assert!(!is_safe_url("https://a.com/ b"));
+        assert!(!is_safe_url("https://a.com/\nb"));
+    }
+}

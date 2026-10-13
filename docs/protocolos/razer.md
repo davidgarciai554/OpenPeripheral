@@ -4,7 +4,7 @@ Implementación: `src/protocol/razer.rs`, `src/devices/razer.rs`.
 
 ## Fuentes
 
-- Descripciones públicas del formato de informe de Razer, como la documentación de la comunidad sobre el protocolo USB. Se reimplementa sin copiar código: OpenRazer es GPL-2.0.
+- Descripciones públicas del formato de informe de Razer, como la documentación de la comunidad sobre el protocolo USB. Se reimplementa sin copiar código. OpenRazer es GPL-2.0-or-later (cabecera SPDX de `driver/razermouse_driver.c`), compatible con la AGPL del proyecto, pero no hace falta su código.
 - Observación propia el 2026-10-06 con un BlackWidow V3 Tenkeyless 1532:0A24, firmware v1.2.
 
 ## Transporte
@@ -41,7 +41,7 @@ La respuesta se acepta solo si coinciden clase e id, el estado es éxito y el CR
 
 ## Ratones (DPI volátil, 2026-10-09, plan `cualquier-raton`)
 
-- **Hechos de protocolo** (consultados en descripciones públicas; OpenRazer es GPL y no se copia código):
+- **Hechos de protocolo** (consultados en descripciones públicas; OpenRazer es GPL-2.0-or-later y no se copia código):
   - Leer DPI: clase `0x04`, id `0x85`, 7 bytes. La respuesta trae almacenamiento, X (u16 big-endian) e Y.
   - Fijar DPI: clase `0x04`, id `0x05`, 7 bytes: `[almacenamiento, X alto, X bajo, Y alto, Y bajo, 0, 0]`.
   - El id de transacción depende de la generación del ratón: `0x1F` en los recientes, `0x3F` en la familia DeathAdder V2 y `0xFF` en los antiguos.

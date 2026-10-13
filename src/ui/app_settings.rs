@@ -58,6 +58,15 @@ const ID_CONFLICT_HELP: i32 = 1554;
 /// the registry (plan `perfiles-por-juego`, D12); and its result.
 const ID_UNREG: i32 = 1555;
 const ID_UNREG_STATUS: i32 = 1556;
+/// «Acerca de»: the legal notices the AGPL asks of an interactive program
+/// (§5(d)) and the way to its source code.
+const ID_ABOUT_TITLE: i32 = 1560;
+const ID_ABOUT_NAME: i32 = 1561;
+const ID_ABOUT_COPYRIGHT: i32 = 1562;
+const ID_ABOUT_LICENSE: i32 = 1563;
+const ID_ABOUT_URL: i32 = 1564;
+const ID_SOURCE: i32 = 1565;
+const ID_SOURCE_STATUS: i32 = 1566;
 // Rows: games not answered (name, detail, «Configurar…», «No preguntar
 // más») and games not asked about (name, detail, «Volver a preguntar»).
 const MAX_NEW: i32 = 8;
@@ -71,6 +80,13 @@ const ID_IGN_DETAIL0: i32 = 1740;
 const ID_IGN_AGAIN0: i32 = 1780;
 
 const MAX_COLUMN: f32 = 760.0;
+const SOURCE_URL: &str = "https://github.com/davidgarciai554/OpenPeripheral";
+const ABOUT_NAME: &str = concat!("OpenPeripheral ", env!("CARGO_PKG_VERSION"));
+/// Visible label of «Ver código fuente y licencia (se abre en el
+/// navegador)», its accessible name.
+const SOURCE_LABEL: &str = "Código fuente y licencia ↗";
+const ABOUT_COPYRIGHT: &str = "Copyright (C) 2026 Chidev";
+const ABOUT_LICENSE: &str = "Este programa se ofrece sin ninguna garantía. Es software libre bajo la licencia GNU AGPL versión 3 o posterior: puedes redistribuirlo y modificarlo según sus términos.";
 const THEMES: [(ThemeChoice, &str); 3] = [
     (ThemeChoice::Sistema, "Sistema"),
     (ThemeChoice::Oscuro, "Oscuro"),
@@ -439,6 +455,31 @@ pub(crate) fn enter(view: HWND) {
         btn,
     );
     add(ID_UNREG_STATUS, Kind::Text(Secondary, true), s, "", st);
+    add(ID_ABOUT_TITLE, Kind::Text(Name, true), s, "Acerca de", st);
+    add(ID_ABOUT_NAME, Kind::Text(Strong, true), s, ABOUT_NAME, st);
+    add(
+        ID_ABOUT_COPYRIGHT,
+        Kind::Text(Secondary, true),
+        s,
+        ABOUT_COPYRIGHT,
+        st,
+    );
+    add(
+        ID_ABOUT_LICENSE,
+        Kind::Text(Secondary, true),
+        s,
+        ABOUT_LICENSE,
+        st,
+    );
+    add(ID_ABOUT_URL, Kind::Text(Secondary, true), s, SOURCE_URL, st);
+    add(
+        ID_SOURCE,
+        Kind::Button(true),
+        b,
+        "Ver código fuente y licencia (se abre en el navegador)",
+        btn,
+    );
+    add(ID_SOURCE_STATUS, Kind::Text(Secondary, true), s, "", st);
     for c in ctls.iter().filter(|c| c.kind == Kind::Choice) {
         // Classic look: the text takes the colours of WM_CTLCOLORSTATIC.
         unsafe {
@@ -943,6 +984,32 @@ pub(crate) fn layout(view: HWND, g: &Geometry, scroll: i32) -> i32 {
         put(ID_UNREG_STATUS, 0, 0, 0, 0);
     }
     card_end(top, &mut y, &mut cards);
+
+    // Acerca de.
+    let top = y;
+    y += pad;
+    section(ID_ABOUT_TITLE, &mut y, &mut put);
+    for (id, role, gap) in [
+        (ID_ABOUT_NAME, Role::Strong, 2.0),
+        (ID_ABOUT_COPYRIGHT, Role::Secondary, 8.0),
+        (ID_ABOUT_LICENSE, Role::Secondary, 8.0),
+        (ID_ABOUT_URL, Role::Secondary, 12.0),
+    ] {
+        let h = measure(id, role, inner);
+        put(id, ix, y, inner, h);
+        y += h + px(gap);
+    }
+    let sw = panel::button_width(&ctx, SOURCE_LABEL).min(inner);
+    put(ID_SOURCE, ix - ring, y - ring, sw + 2 * ring, bh + 2 * ring);
+    y += bh + px(14.0);
+    let sh = measure(ID_SOURCE_STATUS, Role::Secondary, inner);
+    if sh > 0 {
+        put(ID_SOURCE_STATUS, ix, y, inner, sh);
+        y += sh + px(14.0);
+    } else {
+        put(ID_SOURCE_STATUS, 0, 0, 0, 0);
+    }
+    card_end(top, &mut y, &mut cards);
     y += px(20.0);
 
     unsafe {
@@ -1059,6 +1126,7 @@ pub(crate) fn draw_item(view: HWND, dis: &DRAWITEMSTRUCT) {
     // any other button shows its own text.
     let label = match id {
         ID_BACK => "‹  Dispositivos".to_string(),
+        ID_SOURCE => SOURCE_LABEL.into(),
         c if (ID_NEW_CFG0..ID_NEW_CFG0 + MAX_NEW).contains(&c) => "Configurar…".into(),
         n if (ID_NEW_NEVER0..ID_NEW_NEVER0 + MAX_NEW).contains(&n) => "No preguntar más".into(),
         a if (ID_IGN_AGAIN0..ID_IGN_AGAIN0 + MAX_IGNORED).contains(&a) => {
@@ -1205,6 +1273,16 @@ pub(crate) fn on_command(view: HWND, id: i32, code: u32) -> bool {
             set(ID_UNREG_STATUS, &text);
             refresh(view);
         }
+        (ID_SOURCE, BN_CLICKED) => {
+            let text = match system::open_url(SOURCE_URL) {
+                Ok(()) => String::new(),
+                Err(e) => {
+                    format!("No se pudo abrir el navegador ({e}). La dirección es la de arriba.")
+                }
+            };
+            set(ID_SOURCE_STATUS, &text);
+            refresh(view);
+        }
         (a, BN_CLICKED) if (ID_IGN_AGAIN0..ID_IGN_AGAIN0 + MAX_IGNORED).contains(&a) => {
             if let Some(r) = ignored(&shared).get((a - ID_IGN_AGAIN0) as usize) {
                 send(Command::RemoveProgram(r.key.clone(), r.exe.clone()));
@@ -1313,5 +1391,21 @@ mod tests {
             "Sigue el modo de Windows (ahora oscuro)."
         );
         assert_eq!(system_help(true), "Sigue el modo de Windows (ahora claro).");
+    }
+
+    #[test]
+    fn about_shows_the_agpl_notices_and_the_source() {
+        // AGPL §5(d): copyright, no warranty and how to get the licence.
+        assert_eq!(env!("CARGO_PKG_LICENSE"), "AGPL-3.0-or-later");
+        assert!(ABOUT_NAME.ends_with(env!("CARGO_PKG_VERSION")));
+        assert!(ABOUT_COPYRIGHT.contains("Chidev"));
+        assert!(ABOUT_LICENSE.contains("sin ninguna garantía"));
+        assert!(ABOUT_LICENSE.contains("AGPL versión 3 o posterior"));
+        assert_eq!(
+            SOURCE_URL,
+            "https://github.com/davidgarciai554/OpenPeripheral"
+        );
+        assert_eq!(env!("CARGO_PKG_REPOSITORY"), SOURCE_URL);
+        assert!(system::is_safe_url(SOURCE_URL));
     }
 }
